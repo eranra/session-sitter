@@ -452,7 +452,7 @@ details.provenance th { color: var(--fg-muted); font-weight: 600; }
 
 /* The three steps. A CSS counter draws the numeral, so the markup stays an <ol>
    and a screen reader still hears "1 of 3" from the list itself. */
-.steps { list-style: none; counter-reset: step; display: grid; gap: var(--sp-7); margin: 0 0 var(--sp-9); padding: 0; }
+.steps { list-style: none; counter-reset: step; display: grid; gap: var(--sp-7); margin: 0 0 var(--sp-8); padding: 0; }
 .step { counter-increment: step; position: relative; padding-left: 0; }
 @media (min-width: 760px) { .step { padding-left: 4.5rem; } }
 .step::before {
@@ -506,11 +506,18 @@ details.provenance th { color: var(--fg-muted); font-weight: 600; }
 .ladder { list-style: none; display: grid; gap: var(--sp-3); margin: 0 0 var(--sp-8); padding: 0; max-width: 60rem; }
 .layer {
   display: grid; align-items: center; gap: var(--sp-2) var(--sp-4);
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   padding: var(--sp-4); border: 1px solid var(--border);
   border-radius: var(--r-2); background: var(--card);
 }
-@media (min-width: 860px) { .layer { grid-template-columns: auto 13rem 1fr auto; } }
+@media (min-width: 860px) { .layer { grid-template-columns: auto 13rem minmax(0, 1fr) auto; } }
+/* Two things had the page scrolling sideways below 640px, and only the pair of them
+   together: `.pill` is nowrap — right for "shipping" in section 7, wrong for a pill
+   carrying a whole requirement list — and in the two-column layout the pill falls into
+   the `auto` track, which then grows to its content. Span the row and let it wrap.
+   Measured at 320px before: 544px of document in a 320px viewport. */
+.layer .pill { white-space: normal; grid-column: 1 / -1; }
+@media (min-width: 860px) { .layer .pill { grid-column: auto; } }
 .layer-n {
   display: flex; align-items: center; justify-content: center;
   width: 1.75rem; height: 1.75rem; border-radius: var(--r-full);
@@ -541,21 +548,39 @@ details.provenance th { color: var(--fg-muted); font-weight: 600; }
 .callout-quiet { border-color: var(--accent); margin-bottom: 0; }
 .callout-quiet strong { color: var(--accent); }
 .callout-quiet span[aria-hidden] { color: var(--accent); }
-.copy-block { position: relative; margin-bottom: var(--sp-4); }
-.copy-block h3 { font: 600 var(--t-micro)/1.4 var(--font-sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-muted); margin-bottom: var(--sp-2); }
-.copy-block pre {
-  margin: 0; padding: var(--sp-4); padding-right: 6.5rem;
+/* The dark surface belongs to the BLOCK, not to the <pre>, and the button gets a
+   grid row of its own.
+
+   It used to be an absolutely-positioned button over a <pre> with `padding-right:
+   6.5rem` reserving room for it. That reservation is part of the <pre>'s scroll
+   content, so it only holds while every line is short enough not to scroll: a
+   command wider than the box slid straight under the button, and the text it hid
+   was the text you were there to copy. Two columns of install cards made every
+   long command do it. A row cannot be overlapped. */
+.copy-block {
+  margin-bottom: var(--sp-4);
+  /* minmax(0, 1fr), not 1fr: a grid item's automatic minimum size is its CONTENT, so a
+     1fr column sizes itself to the longest command and the page scrolls sideways to fit
+     it. The <pre> needs min-width: 0 for the same reason. */
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--sp-3); justify-items: end;
+  padding: var(--sp-4); border-radius: var(--r-2);
   background: var(--term-bg); color: var(--term-fg);
-  border-radius: var(--r-2); font-size: var(--t-code); line-height: 1.7;
+}
+.copy-block pre {
+  margin: 0; padding: 0; justify-self: stretch; min-width: 0; max-width: 100%;
+  background: none; color: inherit;
+  font-size: var(--t-code); line-height: 1.7;
   white-space: pre; overflow-x: auto;
 }
 .copy-btn {
-  position: absolute; right: var(--sp-2); bottom: var(--sp-2); cursor: pointer;
+  cursor: pointer;
   font: 600 var(--t-micro)/1 var(--font-sans); letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--term-fg); background: #1B2440; border: 1px solid #8B97AF;
   border-radius: var(--r-1); padding: var(--sp-2) var(--sp-3);
 }
 .copy-btn:hover { border-color: var(--term-mint); color: var(--term-mint); }
+/* With no JS the button is hidden, so the block must not keep its empty row. */
+.no-js .copy-block { gap: 0; }
 .reqs { display: grid; grid-template-columns: 1fr; gap: 0; margin: 0; }
 .reqs dt { font-weight: 600; padding-top: var(--sp-3); }
 .reqs dd { margin: 0 0 var(--sp-3); padding-bottom: var(--sp-3); border-bottom: 1px solid var(--border); font-size: var(--t-small); color: var(--fg-muted); }

@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "session-sitter",
   "displayName": "Session Sitter",
-  "version": "0.8.19",
+  "version": "0.8.20",
   "description": "Agent governance for the terminal: your team's written practices decide every permission prompt, unsafe calls are rewritten rather than blocked, and every decision lands in an audit trail that names the clause it applied.",
   "author": {
     "name": "Session Sitter contributors",

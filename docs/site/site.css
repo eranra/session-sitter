@@ -167,7 +167,8 @@ a:hover { color: var(--accent-hover); }
 /* Grid children default to min-width:auto, so a <pre> with `white-space: pre`
    forces its whole track as wide as its longest line and the PAGE scrolls
    sideways instead of the <pre>. Every grid on this page opts out. */
-.hero-grid > *, .cards > *, .compare > *, .io > *, .install-grid > *,
+.hero-grid > *, .cards > *, .compare > *, .io > *, .paths > *,
+.step-notes > *, .onboarding-foot > *,
 .status-rows > *, .rail > * { min-width: 0; }
 .eyebrow {
   font-size: var(--t-micro); line-height: 1.4; letter-spacing: 0.08em;
@@ -442,10 +443,92 @@ details.provenance th { color: var(--fg-muted); font-weight: 600; }
 .pill-shipping { color: var(--accent); border: 1px solid var(--accent); }
 .pill-designed { color: var(--fg-muted); border: 1px dashed var(--fg-muted); }
 
-/* --- 8 install ----------------------------------------------------------- */
+/* --- 8 onboarding -------------------------------------------------------- */
 
-.install-grid { display: grid; gap: var(--sp-7); }
-@media (min-width: 900px) { .install-grid { grid-template-columns: 3fr 2fr; } }
+/* `#install` was this section's anchor and is linked from outside the repo. The
+   alias is an empty inline span, so it must not occupy a line box of its own —
+   `html { scroll-padding-top }` already clears the sticky nav for it. */
+.anchor-alias { display: block; height: 0; overflow: hidden; }
+
+/* The three steps. A CSS counter draws the numeral, so the markup stays an <ol>
+   and a screen reader still hears "1 of 3" from the list itself. */
+.steps { list-style: none; counter-reset: step; display: grid; gap: var(--sp-7); margin: 0 0 var(--sp-9); padding: 0; }
+.step { counter-increment: step; position: relative; padding-left: 0; }
+@media (min-width: 760px) { .step { padding-left: 4.5rem; } }
+.step::before {
+  content: counter(step);
+  display: flex; align-items: center; justify-content: center;
+  width: 2.5rem; height: 2.5rem; margin-bottom: var(--sp-4);
+  font: 700 1.25rem/1 var(--font-mono); color: var(--accent);
+  border: 2px solid var(--accent); border-radius: var(--r-full);
+}
+@media (min-width: 760px) { .step::before { position: absolute; left: 0; top: -0.25rem; margin-bottom: 0; } }
+/* A rule down the gutter, joining one step to the next. */
+@media (min-width: 760px) {
+  .step:not(:last-child)::after {
+    content: ""; position: absolute; left: calc(1.25rem - 1px); top: 2.75rem; bottom: calc(-1 * var(--sp-7));
+    width: 2px; background: var(--border);
+  }
+}
+.step > h3 { margin-bottom: var(--sp-2); }
+.step-lead { max-width: var(--w-prose); margin-bottom: var(--sp-4); }
+
+/* The two install paths, side by side once there is room for both. */
+.paths { display: grid; gap: var(--sp-5); }
+@media (min-width: 900px) { .paths { grid-template-columns: repeat(2, 1fr); align-items: start; } }
+.path {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--r-3); padding: var(--sp-5); box-shadow: var(--shadow-1);
+}
+.path-featured { border-color: var(--accent); }
+.path-head { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-4); }
+.path-head h4 { font: 600 var(--t-h3)/1.3 var(--font-sans); margin: 0; }
+.path .tertiary:last-child { margin-bottom: 0; }
+.from-source { margin-top: var(--sp-4); border-top: 1px solid var(--border); padding-top: var(--sp-4); }
+.from-source > summary {
+  cursor: pointer; font-size: var(--t-small); font-weight: 600; color: var(--accent);
+}
+.from-source[open] > summary { margin-bottom: var(--sp-4); }
+
+/* Step 2's two asides: paste it once, or keep it forever. */
+.step-notes { display: grid; gap: var(--sp-5); margin-top: var(--sp-5); }
+@media (min-width: 900px) { .step-notes { grid-template-columns: repeat(2, 1fr); align-items: start; } }
+.step-notes h4 {
+  font: 600 var(--t-micro)/1.4 var(--font-sans); letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--fg-muted); margin-bottom: var(--sp-3);
+}
+.step-notes .tertiary:last-child { margin-bottom: 0; }
+
+/* The six layers. Same row shape as the front-end status rows in section 7, so
+   "what this needs" reads the same way in both places. */
+.ladder-h { margin-bottom: var(--sp-3); }
+.ladder-lead { max-width: var(--w-prose); margin-bottom: var(--sp-5); }
+.ladder { list-style: none; display: grid; gap: var(--sp-3); margin: 0 0 var(--sp-8); padding: 0; max-width: 60rem; }
+.layer {
+  display: grid; align-items: center; gap: var(--sp-2) var(--sp-4);
+  grid-template-columns: auto 1fr;
+  padding: var(--sp-4); border: 1px solid var(--border);
+  border-radius: var(--r-2); background: var(--card);
+}
+@media (min-width: 860px) { .layer { grid-template-columns: auto 13rem 1fr auto; } }
+.layer-n {
+  display: flex; align-items: center; justify-content: center;
+  width: 1.75rem; height: 1.75rem; border-radius: var(--r-full);
+  font: 600 var(--t-small)/1 var(--font-mono);
+  color: var(--fg-muted); border: 1px solid var(--border-strong);
+}
+.layer .name { font-weight: 600; }
+.layer .note { font-size: var(--t-small); color: var(--fg-muted); grid-column: 1 / -1; }
+@media (min-width: 860px) { .layer .note { grid-column: auto; } }
+.layer .pill { justify-self: start; }
+@media (min-width: 860px) { .layer .pill { justify-self: end; } }
+/* The two layers that cost nothing to turn on: where most people stop. */
+.layer-free { border-color: var(--accent); }
+.layer-free .layer-n { color: var(--accent); border-color: var(--accent); }
+
+.onboarding-foot { display: grid; gap: var(--sp-7); align-items: start; }
+@media (min-width: 900px) { .onboarding-foot { grid-template-columns: 3fr 2fr; } }
+
 .callout {
   display: flex; gap: var(--sp-3); padding: var(--sp-4);
   border: 1px solid var(--orange); border-left-width: 4px; border-radius: var(--r-2);
@@ -453,6 +536,11 @@ details.provenance th { color: var(--fg-muted); font-weight: 600; }
 }
 .callout p { margin: 0; font-size: var(--t-small); }
 .callout strong { color: var(--orange); }
+/* Reassurance, not a warning — orange would say "watch out" about the one thing
+   here that needs no watching. */
+.callout-quiet { border-color: var(--accent); margin-bottom: 0; }
+.callout-quiet strong { color: var(--accent); }
+.callout-quiet span[aria-hidden] { color: var(--accent); }
 .copy-block { position: relative; margin-bottom: var(--sp-4); }
 .copy-block h3 { font: 600 var(--t-micro)/1.4 var(--font-sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-muted); margin-bottom: var(--sp-2); }
 .copy-block pre {

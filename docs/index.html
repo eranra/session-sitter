@@ -47,7 +47,7 @@
       <a class="nav-wide" href="#top">Demo</a>
       <a class="nav-wide" href="#why">Why</a>
       <a class="nav-wide" href="#practices">Practices</a>
-      <a class="nav-wide" href="#install">Install</a>
+      <a class="nav-wide" href="#onboarding">Get started</a>
       <a href="#docs">Docs</a>
       <a href="https://github.com/eranra/session-sitter">GitHub</a>
       <button class="theme-toggle js-only" type="button" id="theme-toggle" aria-live="polite">
@@ -72,9 +72,10 @@
         <a class="btn btn-primary" href="#demo" id="cta-demo">Watch a force-push get corrected</a>
         <a class="btn btn-secondary" href="https://github.com/eranra/session-sitter/tree/main/docs">Read the docs →</a>
       </div>
-      <p class="tertiary"><a href="#install">Install the extension</a></p>
+      <p class="tertiary"><a href="#onboarding">Get started in three steps</a> — two slash commands,
+        then an agent configures it for you</p>
       <p class="credibility">Claude Code · IBM Bob IDE · Codex CLI · VS Code Chat — across windows,
-        across machines.<br>Zero runtime dependencies · TypeScript only · 904 tests · MIT</p>
+        across machines.<br>Zero runtime dependencies · TypeScript only · 2,898 tests · MIT</p>
       <div class="hero-shot">
         <img src="screenshots/panel-wide-dark.png" width="1240" height="1960" loading="lazy" decoding="async"
              alt="The panel open beside an editor, showing the session list in context.">
@@ -265,9 +266,9 @@ An unanswered card denies. It never approves.</pre>
               one silently caches nothing at all, with no error.</td>
           </tr>
           <tr>
-            <th scope="row">904 tests · zero dependencies</th>
-            <td><code>904 passed (904)</code> across 42 files from <code>make check</code> on
-              2026-09-02. <code>package.json</code> declares no <code>dependencies</code> field at
+            <th scope="row">2,898 tests · zero dependencies</th>
+            <td><code>2898 passed (2898)</code> across 117 files from <code>make check</code> on
+              2026-09-07. <code>package.json</code> declares no <code>dependencies</code> field at
               all, so nothing ships alongside the extension. TypeScript-only is enforced in CI by
               <code>ci/check-no-python.sh</code> and <code>ci/check-naming.sh</code>.</td>
           </tr>
@@ -442,7 +443,8 @@ loudly instead of being overwritten.</pre>
   <div class="wrap">
     <h2 id="engine-h">One engine, three front ends</h2>
     <p class="lead section-intro">One supervision engine decides, records and notifies. The front
-      ends only carry the prompt to it — and one of the three is not built yet.</p>
+      ends only carry the prompt to it — so a rule you write once holds in the panel, in a bare
+      terminal session, and in a replay. All three ship today.</p>
     <div class="diagram scroll-x">
       <img src="diagrams/architecture.svg" width="1200" height="560" loading="lazy" decoding="async"
            alt="One supervision engine beneath three front ends — the VS Code panel, the Claude Code plugin's hooks, and the terminal CLI — driving the decision, the record, and the notification.">
@@ -460,61 +462,213 @@ loudly instead of being overwritten.</pre>
       </div>
       <div class="status-row">
         <span class="name">Claude Code plugin</span>
-        <span class="pill pill-designed">designed, not built</span>
-        <span class="note">So the same engine governs a bare terminal session.
-          <a href="https://github.com/eranra/session-sitter/blob/main/docs/superpowers/specs/2026-09-01-claude-code-plugin-design.md">Read the design record →</a></span>
+        <span class="pill pill-shipping">shipping</span>
+        <span class="note">The same engine, governing a bare terminal session through hooks. Seven
+          commands, installed by two slash commands —
+          <a href="#onboarding">start here →</a></span>
       </div>
     </div>
   </div>
 </section>
 
-<!-- ==================== 8 · INSTALL ==================== -->
-<section id="install" aria-labelledby="install-h">
+<!-- ==================== 8 · ONBOARDING ==================== -->
+<section id="onboarding" aria-labelledby="onboarding-h">
+  <!-- This section used to be `#install`, and that anchor is linked from the README, from
+       issues and from anywhere someone pasted it. An empty span keeps those links landing
+       here rather than at the top of the page. -->
+  <span id="install" class="anchor-alias" aria-hidden="true"></span>
   <div class="wrap">
-    <h2 id="install-h">Install</h2>
-    <div class="install-grid">
-      <div>
-        <div class="callout">
-          <span aria-hidden="true">⚠</span>
-          <p><strong>The Claude Code plugin is the plan, and is not built yet.</strong> When it
-            lands, install will be two slash commands. Until then the VS Code extension is the way
-            in, and this page will not pretend otherwise. Not on the Marketplace yet either, so
-            installation is by VSIX.</p>
-        </div>
+    <h2 id="onboarding-h">Onboarding, in three steps</h2>
+    <p class="lead section-intro">Install a front end, then hand the configuring to an agent.
+      There are 38 settings and you should not have to read about any of them — a skill in this
+      repository interviews you, writes the file, and then a script says whether it worked.</p>
 
-        <div class="copy-block">
-          <h3>From the latest release</h3>
+    <ol class="steps">
+
+      <li class="step" id="step-install">
+        <h3>Install a front end</h3>
+        <p class="step-lead">Both drive the same supervision engine, and neither needs the other.
+          Take the plugin if you work in the terminal, the extension if you want the panel — or
+          both, on the same machine.</p>
+
+        <div class="paths">
+          <div class="path path-featured">
+            <div class="path-head">
+              <h4>Claude Code plugin</h4>
+              <span class="pill pill-shipping">no download</span>
+            </div>
+            <div class="copy-block">
+<pre id="cmd-plugin">/plugin marketplace add eranra/session-sitter
+/plugin install session-sitter@session-sitter</pre>
+              <button class="copy-btn js-only" type="button" data-copy="cmd-plugin">Copy</button>
+            </div>
+            <p class="tertiary">Two slash commands, typed inside Claude Code. Nothing to download,
+              no window to reload. It brings the hooks that answer every permission prompt and
+              seven <code>/session-sitter:*</code> commands —
+              <a href="https://github.com/eranra/session-sitter/blob/main/docs/PLUGIN.md">PLUGIN.md</a>
+              covers all of them.</p>
+          </div>
+
+          <div class="path">
+            <div class="path-head">
+              <h4>VS Code extension</h4>
+              <span class="pill pill-designed">by VSIX</span>
+            </div>
+            <div class="copy-block">
 <pre id="cmd-vsix">code --install-extension session-sitter-*.vsix</pre>
-          <button class="copy-btn js-only" type="button" data-copy="cmd-vsix">Copy</button>
-        </div>
-        <p class="tertiary">Grab the <code>.vsix</code> from the
-          <a href="https://github.com/eranra/session-sitter/releases/latest">latest release</a>, or
-          use the IDE: Extensions panel → <code>···</code> → <strong>Install from VSIX…</strong>
-          Every pull request also attaches a build under the CI run's <strong>Artifacts</strong>.</p>
+              <button class="copy-btn js-only" type="button" data-copy="cmd-vsix">Copy</button>
+            </div>
+            <p class="tertiary">Not on the Marketplace yet, so take the <code>.vsix</code> from the
+              <a href="https://github.com/eranra/session-sitter/releases/latest">latest release</a>
+              — or the IDE route, Extensions panel → <code>···</code> →
+              <strong>Install from VSIX…</strong> Every pull request attaches a build under its CI
+              run's <strong>Artifacts</strong>, so you can install the exact code under review.</p>
 
-        <div class="copy-block">
-          <h3>Or from source</h3>
+            <details class="from-source">
+              <summary>Or build it from source</summary>
+              <div class="copy-block">
 <pre id="cmd-source">git clone https://github.com/eranra/session-sitter.git
 cd session-sitter
 make install</pre>
-          <button class="copy-btn js-only" type="button" data-copy="cmd-source">Copy</button>
+                <button class="copy-btn js-only" type="button" data-copy="cmd-source">Copy</button>
+              </div>
+              <p class="tertiary">Then reload the window — <kbd>Ctrl+Shift+P</kbd> →
+                <strong>Developer: Reload Window</strong>. For another VS Code build, point
+                <code>make install</code> at its CLI: <code>make install CODE=bobide</code> for IBM
+                Bob IDE, or <code>CODE=cursor</code>, <code>CODE=code-insiders</code>.</p>
+            </details>
+          </div>
         </div>
-        <p class="tertiary">Then reload the window — <kbd>Ctrl+Shift+P</kbd> →
-          <strong>Developer: Reload Window</strong>. For another VS Code build, point
-          <code>make install</code> at its CLI: <code>make install CODE=bobide</code> for IBM Bob
-          IDE, or <code>CODE=cursor</code>, <code>CODE=code-insiders</code>.</p>
-      </div>
+      </li>
 
+      <li class="step" id="step-configure">
+        <h3>Let an agent do the configuring</h3>
+        <p class="step-lead"><a href="https://github.com/eranra/session-sitter/tree/main/docs/onboarding"><code>docs/onboarding/</code></a>
+          is an Agent Skill — instructions any agent that reads skills will follow to set this up
+          for you. It asks what you want, proposes the settings in words before writing them, and
+          validates the result with a script rather than from memory. Paste this at Claude Code,
+          IBM Bob, or whatever you run:</p>
+
+        <div class="copy-block">
+<pre id="cmd-skill">Read docs/onboarding/SKILL.md and set up Session Sitter for me.</pre>
+          <button class="copy-btn js-only" type="button" data-copy="cmd-skill">Copy</button>
+        </div>
+
+        <div class="step-notes">
+          <div>
+            <h4>Have it in every session</h4>
+            <div class="copy-block">
+<pre id="cmd-skill-install">mkdir -p ~/.claude/skills/configuring-session-sitter
+cp -r docs/onboarding/* ~/.claude/skills/configuring-session-sitter/</pre>
+              <button class="copy-btn js-only" type="button" data-copy="cmd-skill-install">Copy</button>
+            </div>
+            <p class="tertiary">Then just say what you want — <em>"turn on Telegram cards"</em>,
+              <em>"why isn't my auto-approve rule firing?"</em>, <em>"review my Session Sitter
+              configuration"</em>. The skill answers to all three.</p>
+          </div>
+          <div>
+            <h4>Or read it yourself</h4>
+            <p class="tertiary">Nothing here needs an agent. <a href="https://github.com/eranra/session-sitter/blob/main/docs/onboarding/SKILL.md">SKILL.md</a>
+              is written in the order a configuration is actually built, so it reads as a
+              getting-started guide — with seven complete
+              <a href="https://github.com/eranra/session-sitter/tree/main/docs/onboarding/examples">example configurations</a>
+              to copy, one per layer, each of them re-validated by CI so a typo in one cannot
+              reach you.</p>
+          </div>
+        </div>
+      </li>
+
+      <li class="step" id="step-verify">
+        <h3>Prove it took</h3>
+        <p class="step-lead">This step exists because of one failure mode: <strong>VS Code ignores
+          a setting id it does not recognise.</strong> No error, no warning — just a feature that
+          never turns on. So the skill does not trust a list of settings, and neither should you.</p>
+
+        <div class="copy-block">
+<pre id="cmd-doctor">node docs/onboarding/scripts/ss-config.mjs where     # which settings.json is the live one
+node docs/onboarding/scripts/ss-config.mjs check     # what is on, and what is broken</pre>
+          <button class="copy-btn js-only" type="button" data-copy="cmd-doctor">Copy</button>
+        </div>
+
+        <p class="tertiary">The doctor reads the declared settings out of the build in front of you,
+          so a renamed or removed one shows up the moment the extension changes.
+          <code>where</code> answers the question behind most "I changed it and nothing happened"
+          reports — several <code>settings.json</code> files usually exist and only one is read.
+          <code>check</code> resolves settings, the environment and your <code>.env</code> in the
+          same precedence order the extension uses, so it can say whether a feature is actually
+          <em>on</em>, which a settings file alone cannot. No dependencies, no network, and it
+          never writes a file.</p>
+      </li>
+
+    </ol>
+
+    <h3 id="layers-h" class="ladder-h">Stop at the layer you want</h3>
+    <p class="ladder-lead">Configuration comes in six layers, and each one is only worth having if
+      the one before it is on. The skill walks them in this order and stops where you stop — most
+      people want the first two, which need nothing beyond the install you just did.</p>
+
+    <ol class="ladder" aria-labelledby="layers-h">
+      <li class="layer layer-free">
+        <span class="layer-n" aria-hidden="true">1</span>
+        <span class="name">The session panel</span>
+        <span class="note">The tabbed session list — sorting that holds rows still, per-project
+          colours, sessions on your other machines.</span>
+        <span class="pill pill-shipping">needs nothing</span>
+      </li>
+      <li class="layer layer-free">
+        <span class="layer-n" aria-hidden="true">2</span>
+        <span class="name">Auto-respond rules</span>
+        <span class="note">Deterministic auto-approve, auto-reject and canned replies. No model,
+          no cost, no latency.</span>
+        <span class="pill pill-shipping">needs nothing</span>
+      </li>
+      <li class="layer">
+        <span class="layer-n" aria-hidden="true">3</span>
+        <span class="name">The AI supervisor</span>
+        <span class="note">An agent judges each ambiguous prompt against your written
+          practices.</span>
+        <span class="pill pill-designed">a state directory · a classifier CLI</span>
+      </li>
+      <li class="layer">
+        <span class="layer-n" aria-hidden="true">4</span>
+        <span class="name">Telegram cards</span>
+        <span class="note">Decision cards on your phone, with the countdown running.</span>
+        <span class="pill pill-designed">a bot · a group</span>
+      </li>
+      <li class="layer">
+        <span class="layer-n" aria-hidden="true">5</span>
+        <span class="name">Telegram remote control</span>
+        <span class="note">Read a session and type into it from your phone.</span>
+        <span class="pill pill-designed">a forum group · privacy mode off · an allowlist</span>
+      </li>
+      <li class="layer">
+        <span class="layer-n" aria-hidden="true">6</span>
+        <span class="name">The fast classifier</span>
+        <span class="note">Decisions in about 4–6s instead of about 13.5s, for most ambiguous
+          actions. Inert, harmlessly, on a Pro or Max subscription.</span>
+        <span class="pill pill-designed">a gateway · a token · a model</span>
+      </li>
+    </ol>
+
+    <div class="onboarding-foot">
       <div>
         <h3>What you need</h3>
         <dl class="reqs">
-          <dt>VS Code or IBM Bob IDE</dt><dd>1.65 or later</dd>
+          <dt>VS Code or IBM Bob IDE</dt><dd>1.65 or later — for the extension. The plugin needs only Claude Code.</dd>
           <dt>Linux, WSL or macOS</dt><dd>for Claude liveness detection — <code>/proc/&lt;pid&gt;/stat</code> on Linux, <code>ps</code> elsewhere</dd>
           <dt><code>python3</code></dt><dd>to read IBM Bob's SQLite store. Only needed for Bob sessions.</dd>
-          <dt>Node 20+</dt><dd>only to build from source</dd>
+          <dt>Node 20+</dt><dd>for the doctor in step 3, and to build from source</dd>
         </dl>
         <p class="tertiary">Zero runtime dependencies — <code>package.json</code> declares no
           <code>dependencies</code> at all. Nothing is installed alongside it.</p>
+      </div>
+      <div class="callout callout-quiet">
+        <span aria-hidden="true">◆</span>
+        <p><strong>Nothing is auto-approved because you skipped a step.</strong> With no supervisor
+          and no rules configured, Session Sitter watches and reports and decides nothing — and two
+          guards hold whatever you configure later: a question meant for you is never auto-approved,
+          and neither is a request whose metadata the hook did not see. Silence is never
+          approval.</p>
       </div>
     </div>
   </div>

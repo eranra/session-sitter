@@ -17,6 +17,7 @@ import {
 } from './sessionSort';
 import { resolveWorkspaceColor, type WorkspaceBadgeColor } from './workspaceColors';
 import { resolveDisplayStatus } from './sessionStatus';
+import type { HookStates } from './HookActivityWatcher';
 import {
   DEFAULT_PROBELESS_ACTIVE_WINDOW_MINUTES, partitionByActivity,
 } from './sessionActivity';
@@ -125,6 +126,9 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
     // you have read from one you have not, and Bob rows fall back to their database status.
     private readonly _memento?: vscode.Memento,
     private readonly _pendingBySession?: () => PendingBySession,
+    // What the plugin's hooks observed, for the sessions that run them. Optional like the two above:
+    // without it Claude rows fall back to the transcript inference and its 45-second latency.
+    private readonly _hookStates?: () => HookStates,
   ) {
     this._recordsDir = stateDir ? path.join(stateDir, 'records') : '';
     this._notificationsDir = stateDir ? path.join(stateDir, 'notifications') : '';
@@ -716,13 +720,23 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
    * disagreeing about what a session is.
    */
   private _withDisplayStatus(session: ClaudeSession): ClaudeSession {
+    // Bob's rows are keyed by task id in the pending map; Claude's come from the hook trail. A
+    // session appears in at most one, so looking up both is safe and needs no source branch here.
+    const hookState = this._hookStates?.().get(session.sessionId);
     const status = resolveDisplayStatus(session.status, {
       pending: this._pendingBySession?.().get(session.sessionId),
+      hookState,
       updatedAtMs: session.updatedAt.getTime(),
       lastViewedMs: this._lastViewed()[session.sessionId],
       nowMs: Date.now(),
     });
-    return status === session.status ? session : { ...session, status };
+    // The tool a session is on is only worth showing while it is actually live: on a finished or
+    // dormant row it is archaeology, and on a blocked row the status already says what is happening.
+    const activeTool = hookState?.tool && (status === 'working' || status === 'stalled')
+      ? hookState.tool
+      : undefined;
+    if (status === session.status && activeTool === session.activeTool) { return session; }
+    return { ...session, status, activeTool };
   }
 
   /** When each session was last opened from the panel, by session id. */

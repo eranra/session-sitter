@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   ABANDONED_TOOL_CALL_MS,
+  API_RETRY_WINDOW_MS,
+  COMPACTION_WINDOW_MS,
   PROMPT_WINDOW_MS,
   STREAMING_WINDOW_MS,
   TOOL_STALL_MS,
@@ -211,12 +213,124 @@ describe('resolveDisplayStatus', () => {
   });
 });
 
+describe('API errors', () => {
+  // A rate limit, an overload, a DNS failure. Claude retries silently, writing nothing until the
+  // retry lands — so the transcript looks exactly like a session sitting on a prompt. Reporting that
+  // as `approval` was a false claim in the one state the worklist never ages out.
+
+  const apiError = (text = 'API Error: 429 rate limit'): JsonlRecord => ({
+    type: 'assistant', isApiErrorMessage: true,
+    message: { model: '<synthetic>', content: [{ type: 'text', text }] },
+  });
+
+  it('is working while a retry could still be in flight', () => {
+    expect(tail([assistantToolUse('Bash'), apiError()], 1_000)).toBe('working');
+  });
+
+  it('becomes stalled, never approval, once the retry window has passed', () => {
+    // The bug this fixes: nobody is being asked anything, so amber would send you looking for a
+    // prompt that does not exist and cannot be cleared.
+    expect(tail([assistantToolUse('Bash'), apiError()], API_RETRY_WINDOW_MS + 1)).toBe('stalled');
+  });
+
+  it('outranks the tool call it interrupted', () => {
+    // Checked before the tool-call branch on purpose. Otherwise the walk skips the synthetic record,
+    // reaches the call underneath, and reports a call the API never answered as blocked on you.
+    expect(tail([assistantToolUse('Bash'), apiError()], TOOL_STALL_MS + 1)).not.toBe('approval');
+  });
+
+  it('is recognised from the text alone when the flag is absent', () => {
+    // Older transcripts may not carry `isApiErrorMessage`. A missed API error costs a false
+    // `approval`, so the detector errs toward recognising one.
+    const bare: JsonlRecord = {
+      type: 'assistant', message: { content: [{ type: 'text', text: 'API Error: overloaded' }] },
+    };
+    expect(tail([bare], API_RETRY_WINDOW_MS + 1)).toBe('stalled');
+  });
+
+  it('does not mistake ordinary prose that mentions an API error', () => {
+    // Assistant text *about* an API error is a finished answer, not an outage. Only text that begins
+    // with the marker counts.
+    const prose = assistantText('The API Error you saw earlier was a rate limit.');
+    expect(tail([prose], STREAMING_WINDOW_MS + 1)).toBe('finished');
+  });
+});
+
+describe('compaction', () => {
+  // Compaction rewrites the context and resumes on its own, writing nothing while it runs. Left
+  // unrecognised it fell through to "nothing conclusive" and went dormant after 30 seconds, hiding a
+  // session that was about to start writing again.
+
+  it('is working while the compaction could still be running', () => {
+    expect(tail([{ type: 'compact-summary' } as JsonlRecord], 1_000)).toBe('working');
+  });
+
+  it('becomes stalled if it never comes back', () => {
+    expect(tail([{ isCompactSummary: true } as JsonlRecord], COMPACTION_WINDOW_MS + 1))
+      .toBe('stalled');
+  });
+});
+
+describe('the hook state', () => {
+  const base = { updatedAtMs: NOW, nowMs: NOW };
+
+  it('replaces the 45-second inference with what the hooks saw', () => {
+    // The point of the whole feature: `working` inferred from a moving file, upgraded to the prompt
+    // the plugin actually observed open inside the session.
+    expect(resolveDisplayStatus('working', { ...base, hookState: { pending: 'approval' } }))
+      .toBe('approval');
+    expect(resolveDisplayStatus('working', { ...base, hookState: { pending: 'question' } }))
+      .toBe('question');
+  });
+
+  it('lets a live host read outrank the trail', () => {
+    // The host is looking at the running process; the trail is a file written a moment ago.
+    expect(resolveDisplayStatus('working', {
+      ...base, pending: 'question', hookState: { pending: 'approval' },
+    })).toBe('question');
+  });
+
+  it('drops a zombie approval as soon as the session is known to have ended', () => {
+    // Previously this waited out ABANDONED_TOOL_CALL_MS — a full day of a dead session sitting at the
+    // top of the worklist with nothing able to clear it.
+    expect(resolveDisplayStatus('approval', { ...base, hookState: { settled: true } }))
+      .toBe('dormant');
+  });
+
+  it('still splits finished by whether you have read it after the session ended', () => {
+    // `settled` is about liveness; finished vs seen is about reading. An ended session whose result
+    // you have not opened is still a result you have not opened.
+    expect(resolveDisplayStatus('finished', { ...base, hookState: { settled: true } }))
+      .toBe('finished');
+    expect(resolveDisplayStatus('finished', {
+      ...base, hookState: { settled: true }, lastViewedMs: NOW,
+    })).toBe('seen');
+  });
+
+  it('changes nothing for a session that runs no hooks', () => {
+    // The common case. Silence from the trail means the plugin is not installed there.
+    expect(resolveDisplayStatus('working', base)).toBe('working');
+    expect(resolveDisplayStatus('approval', base)).toBe('approval');
+  });
+});
+
 describe('status predicates', () => {
   it('blocked-on-you is exactly the two states your input unblocks', () => {
     expect(isBlockedOnYou('approval')).toBe(true);
     expect(isBlockedOnYou('question')).toBe(true);
     expect(isBlockedOnYou('finished')).toBe(false);
     expect(isBlockedOnYou('working')).toBe(false);
+    // Blocked on the API, not on you: there is nothing to click. Marking it true would exempt it
+    // from the worklist's age bound and recreate the zombie row this release removes.
+    expect(isBlockedOnYou('stalled')).toBe(false);
+  });
+
+  it('does not ask for you when a session is stalled', () => {
+    expect(needsYou('stalled')).toBe(false);
+  });
+
+  it('keeps a stalled session in the worklist — it is live work that went wrong', () => {
+    expect(isWorklistSignal('stalled')).toBe(true);
   });
 
   it('needs-you adds the unread result — the third reason to click', () => {

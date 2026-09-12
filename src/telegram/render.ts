@@ -80,6 +80,9 @@ const STATUS_ICON: Record<SessionStatus, string> = {
   question: '❓',
   finished: '🟢',
   working: '🔄',
+  // Red, not amber: amber means "your turn" everywhere in this set, and a stall is not your turn —
+  // there is nothing to tap. It is the one glyph reporting a fault rather than a turn.
+  stalled: '🔴',
   seen: '⚫',
   dormant: '⚪',
 };

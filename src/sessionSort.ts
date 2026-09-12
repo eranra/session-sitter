@@ -134,11 +134,14 @@ function titleKey(s: SortableSession): string {
  * work in progress, then everything quiet.
  *
  * `approval` leads `question` because a blocked tool usually stalls a whole run, while a question
- * has at least already told you what it needs. Keyed by every state, so adding a seventh fails to
+ * has at least already told you what it needs. Keyed by every state, so adding an eighth fails to
  * compile here rather than silently sorting last.
  */
 const STATUS_RANK: Record<SessionStatus, number> = {
-  approval: 0, question: 1, finished: 2, working: 3, seen: 4, dormant: 5,
+  // `stalled` sorts just below `working`: both are live runs, and a stall is the one of the two worth
+  // looking at — but it stays under `finished`, because a result you have not read is still a better
+  // use of your attention than a rate limit that will clear itself.
+  approval: 0, question: 1, finished: 2, working: 3, stalled: 4, seen: 5, dormant: 6,
 };
 
 function statusRank(s: SortableSession): number {

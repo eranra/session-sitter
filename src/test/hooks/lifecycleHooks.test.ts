@@ -243,6 +243,18 @@ describe('SessionEnd', () => {
   it('returns no decision fields — the event discards them anyway', async () => {
     expect(await sessionEnd({ session_id: 'sess-a' })).toEqual({});
   });
+
+  it('writes the panel’s terminal marker to the activity trail', async () => {
+    // The per-session file above is the audit record; the panel reads the activity trail. Without a
+    // line there, a transcript that ends mid-tool-call stays `approval` for a full day — a dead
+    // session at the top of the worklist with nothing able to clear it. See src/hookActivity.ts.
+    await sessionEnd({ session_id: 'sess-end', reason: 'prompt_input_exit' });
+
+    const lines = fs.readFileSync(activityPath(), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    const marker = lines.find(l => l.sessionId === 'sess-end');
+    expect(marker).toMatchObject({ sessionId: 'sess-end', waiting: 'session_end' });
+    expect(marker.ts).toMatch(/^\d{4}-/);
+  });
 });
 
 // --------------------------------------------------------------------------- SessionEnd: Stage A

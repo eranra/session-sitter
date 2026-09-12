@@ -8,6 +8,7 @@ import { InspectorBobSender, type AutoRespondRule } from './agents/BobSender';
 import { InspectorBobApprover, type PendingApproval } from './agents/BobApprover';
 import { AutoResponder } from './AutoResponder';
 import { PendingWatcher } from './PendingWatcher';
+import { HookActivityWatcher } from './HookActivityWatcher';
 import {
   dumpClaudeManagerShape,
   dumpClaudeSendApprovalShape,
@@ -90,12 +91,18 @@ export function activate(context: vscode.ExtensionContext) {
   // blocked on you rather than busy — see PendingWatcher for why Claude is not in it.
   const pendingWatcher = new PendingWatcher(approver, log);
 
+  // What our own hooks saw inside each Claude session — a prompt opened, a turn ended, the session
+  // closed. This is the Claude-shaped counterpart to `pendingWatcher` above, and the only route by
+  // which a Claude approval reaches a row without waiting out the transcript's 45-second inference.
+  const hookActivityWatcher = new HookActivityWatcher(log);
+
   const provider = new SessionSitterViewProvider(
     context.extensionUri, sessionManager, log, stateDir,
     // Global, not workspace: the same session list appears in every window, so "I have read this"
     // must mean the same thing in all of them.
     context.globalState,
-    () => pendingWatcher.snapshot());
+    () => pendingWatcher.snapshot(),
+    () => hookActivityWatcher.snapshot());
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(SessionSitterViewProvider.viewType, provider),
   );
@@ -104,6 +111,10 @@ export function activate(context: vscode.ExtensionContext) {
   pendingWatcher.setOnChange(() => provider.refresh());
   pendingWatcher.start();
   context.subscriptions.push({ dispose: () => pendingWatcher.dispose() });
+
+  hookActivityWatcher.setOnChange(() => provider.refresh());
+  hookActivityWatcher.start();
+  context.subscriptions.push({ dispose: () => hookActivityWatcher.dispose() });
 
   // ── Commands ──────────────────────────────────────────────────────────────
 

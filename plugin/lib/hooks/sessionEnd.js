@@ -106,6 +106,19 @@ async function handle(input) {
         // Nothing useful to do inside a 1.5 s budget with no way to report it. The decisions
         // themselves are already durable in the trail.
     }
+    // The panel's terminal signal. The per-session file above is the audit record, but the panel reads
+    // the activity trail — so one line goes there too, and it is what lets a blocked-looking transcript
+    // be recognised as a *closed* session immediately rather than after `ABANDONED_TOOL_CALL_MS`.
+    //
+    // Written as a `waiting` record so it shares the shape `notification.ts` already uses: the panel's
+    // reader (`src/hookActivity.ts`) folds one stream of wait records and needs no second parser.
+    // One synchronous append, which is what the 1.5 s budget allows.
+    (0, trail_1.appendJsonl)((0, paths_1.activityPath)(), {
+        ts: closed.endedAt,
+        sessionId,
+        waiting: 'session_end',
+        message: typeof input.reason === 'string' ? input.reason.slice(0, 200) : null,
+    });
     // Stage A. Wrapped because a fold must never be able to fail a session close: the trail is already
     // durable, so the worst case of a broken fold is that the next `SessionEnd` folds these bytes
     // instead — which is exactly the property being offset-driven buys.

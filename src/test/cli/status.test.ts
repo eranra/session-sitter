@@ -220,8 +220,10 @@ describe('renderJson', () => {
     expect(json.version).toBe(1);
     expect(json.generatedAt).toBe(NOW.toISOString());
     // Every state is keyed, present at zero — a consumer can read a count without probing for it.
+    // `stalled` joined the set additively: version 1 promises that fields are added and never
+    // repurposed, and a consumer reading `counts.approval` is unaffected by a new sibling key.
     expect(json.counts).toEqual({
-      total: 2, approval: 1, question: 0, finished: 0, working: 1, seen: 0, dormant: 0,
+      total: 2, approval: 1, question: 0, finished: 0, working: 1, stalled: 0, seen: 0, dormant: 0,
     });
     expect(Object.keys(json.sessions[0]).sort()).toEqual([
       'ageSeconds', 'agent', 'blockedOnYou', 'local', 'machine', 'sessionId', 'status', 'title',

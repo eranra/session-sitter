@@ -68,6 +68,7 @@ describe('statusIcon', () => {
       question: '\u2753',
       finished: '\u{1F7E2}',
       working: '\u{1F504}',
+      stalled: '\u{1F534}',
       seen: '\u26AB',
       dormant: '\u26AA',
     };

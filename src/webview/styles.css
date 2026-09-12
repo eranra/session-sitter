@@ -435,6 +435,32 @@ button:focus-visible {
   content: '?';
 }
 
+/*
+ * stalled: a red pause bar — the run is live but stuck on something that is not you.
+ *
+ * Red rather than amber, and that distinction carries the whole meaning. Amber is "your turn"
+ * everywhere in this set; a rate limit, an API outage or a compaction that never returned is a
+ * *fault*, and there is nothing on screen for you to answer. Colouring it amber would put it in the
+ * worklist's urgent band and send you looking for a prompt that does not exist.
+ *
+ * Static, and deliberately not a ring: `working` owns the only moving glyph, and the entire point of
+ * this state is that the session has stopped moving. Two bars rather than one so it does not read as
+ * a stray dash at 10px.
+ */
+.status-stalled {
+  background: transparent;
+  color: var(--vscode-charts-red, #f14c4c);
+  border-radius: 0;
+  font-size: 11px;
+  line-height: 10px;
+  overflow: visible;
+}
+
+.status-stalled::before {
+  content: '❙❙';
+  letter-spacing: -1px;
+}
+
 /* finished: a green dot inside a ring — a result waiting to be read. Static. */
 .status-finished {
   background: var(--vscode-charts-green, #4caf50);

@@ -12,7 +12,7 @@
  * the `ExtensionContext` wiring, and calls in here for every read.
  *
  * It does not decide what a session's status *means*, either. `readStatus` below does the I/O and
- * hands the records to `claudeStatusFromTail` in `sessionStatus.ts`, which owns all six states and
+ * hands the records to `claudeStatusFromTail` in `sessionStatus.ts`, which owns every state and
  * every rule behind them. One copy of those rules, read by both front ends.
  *
  * Nothing here holds state, so every function takes the directory it reads as an argument. That is

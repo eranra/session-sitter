@@ -106,6 +106,9 @@ const INDICATOR: Readonly<Record<SessionStatus, { glyph: string; label: string; 
   question: { glyph: '?', label: 'question', color: 'yellow' },
   finished: { glyph: '◉', label: 'finished', color: 'green' },
   working: { glyph: '▸', label: 'working', color: 'cyan' },
+  // Red, alone among the states, because it is the only one reporting something *wrong* — a rate
+  // limit or an outage. Not amber: amber is reserved for "your turn", and a stall is not your turn.
+  stalled: { glyph: '⏸', label: 'stalled', color: 'red' },
   seen: { glyph: '·', label: 'seen', color: 'gray' },
   dormant: { glyph: '○', label: 'dormant', color: 'gray' },
 };
@@ -274,9 +277,10 @@ export function renderText(
  * Versioned and documented because other tools will read it. Two rules for changing it: fields are
  * added, never repurposed, and `version` goes up the day a field's meaning changes.
  *
- * `status` is one of the six states in `sessionStatus.ts`, the same value the panel renders — a
- * script and the IDE therefore agree about every session. `blockedOnYou` is carried alongside it so
- * a consumer does not have to hard-code which two of the six those are.
+ * `status` is one of the states in `sessionStatus.ts`, the same value the panel renders — a script
+ * and the IDE therefore agree about every session. `blockedOnYou` is carried alongside it so a
+ * consumer does not have to hard-code which of them those are — which is exactly what kept `version`
+ * at 1 when `stalled` was added: `counts` gained a key, and no existing field changed meaning.
  */
 export interface StatusJson {
   version: 1;

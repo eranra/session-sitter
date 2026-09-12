@@ -10,7 +10,7 @@ the bug.
 
 ---
 
-## The six states
+## The seven states
 
 | Marker | In Telegram | State | Means | Your move |
 |:---:|:---:|---|---|---|
@@ -18,6 +18,7 @@ the bug.
 | solid amber arrow | 🟠 | `approval` | Paused on a permission prompt | Approve or reject it |
 | amber question mark | ❓ | `question` | Asked you something | Answer it |
 | green dot in a ring | 🟢 | `finished` | Done, and you have not opened it since | Read the result |
+| red pause bars | 🔴 | `stalled` | Stuck on a rate limit, an API outage or a compaction | Nothing — it is not your turn |
 | small grey dot | ⚫ | `seen` | Done, and you have read it | Nothing |
 | hollow grey circle | ⚪ | `dormant` | Nothing happening, or no signal to tell | Nothing |
 
@@ -28,7 +29,7 @@ so it cannot drift away from this table by accident.
 
 They answer one question — **whose turn is it, and why** — and they are ordered above the way
 urgency runs. Pick **Needs you first** from the sort menu (**⇅**) and the list is sorted in exactly
-that order: `approval`, `question`, `finished`, `working`, `seen`, `dormant`.
+that order: `approval`, `question`, `finished`, `working`, `stalled`, `seen`, `dormant`.
 
 ### Why shape and not just colour
 
@@ -37,7 +38,9 @@ the outline is what you actually recognise at a glance, and it keeps working for
 separate the colours and in a high-contrast theme where the palette is overridden.
 
 **Only `working` moves.** Anything that animates reads as "busy, leave it alone" — which is the
-worst possible thing to say about a session sitting blocked, waiting for you.
+worst possible thing to say about a session sitting blocked, waiting for you. `stalled` is static
+for the same reason read the other way: the session has *stopped* moving, and a spinning ring
+would claim the opposite.
 
 The `working` ring turns even if your system asks for reduced motion. That is a deliberate
 exception, and the only one: the turning *is* the signal. A stopped ring says nothing the other five
@@ -66,6 +69,10 @@ below.
 **The upgrade: a live read from the agent's extension host.** This is certain, because the agent
 itself is being asked. But it only covers sessions in windows on *this* machine, and only for Bob
 (see the gap below).
+
+**The other upgrade: what our own hooks saw.** For Claude, the plugin's hooks run inside the session
+and record the blocked state keyed by session id — see [below](#the-gap-for-claude-and-how-the-plugins-own-hooks-close-it).
+Available only where the plugin is installed, and outranked by a live host read when both speak.
 
 The rule between them is asymmetric, and it matters:
 
@@ -99,6 +106,10 @@ rather than treated as an answer.
 | user prompt | ≥ 2min | `dormant` (nobody ever answered) |
 | assistant text | < 30s | `working` (still streaming) |
 | assistant text | ≥ 30s | `finished` |
+| API error (rate limit, outage) | < 5min | `working` (retry may be in flight) |
+| API error (rate limit, outage) | ≥ 5min | **`stalled`** (never `approval` — nobody is being asked) |
+| compaction | < 5min | `working` (it resumes on its own) |
+| compaction | ≥ 5min | `stalled` |
 | `pr-link` / `last-prompt` | any | `finished` (session closed out) |
 | interrupt marker you typed | any | `finished` |
 | nothing conclusive | < 30s / ≥ 30s | `working` / `dormant` |
@@ -131,15 +142,62 @@ probe, which never consults the status at all, and Bob's live pending approvals 
 regardless of age. The bound only bites when *no* live signal agrees with the file — which is exactly
 the case where the file is the thing that is wrong.
 
-### The known gap for Claude
+### The gap for Claude, and how the plugin's own hooks close it
 
-Claude's live pending approvals **cannot** be attached to a session. They carry a comms channel id,
-not a session id, and the channel-to-session mapping is not available to us — the same gap that
-stops auto-approve rules honouring `sessionPattern` for Claude. Attaching one anyway would put one
-session's prompt on another row, which is worse than inferring.
+Claude's live pending approvals **cannot** be attached to a session *through the inspector*. They
+carry a comms channel id, not a session id, and the channel-to-session mapping is not available to
+us — the same gap that stops auto-approve rules honouring `sessionPattern` for Claude. Attaching one
+anyway would put one session's prompt on another row, which is worse than inferring.
 
-So for Claude, `approval` and `question` come from the transcript heuristic above, and carry its 45
-second latency. For Bob they are read live.
+But the inspector is not the only route. When the [plugin](PLUGIN.md) is installed, its hooks run
+*inside* the session, and they are keyed by `session_id` — which is exactly the join key the
+inspector lacks. Two of them observe the blocked state directly:
+
+| Hook | Writes | Says |
+|---|---|---|
+| `PermissionRequest` | `decisions.jsonl` | An exempt record (`decision: none`, `actor: human`) for `AskUserQuestion` and `ExitPlanMode` — the layer was asked and deliberately left the question to you. Lands when the tool is called. |
+| `Notification` | `activity.jsonl` | `permission_prompt`, ~6s after a dialog appears; `idle_prompt`, ~60s after a turn ends with nobody typing. |
+| `PostToolUse` | `activity.jsonl` | A tool produced a result — which is what *closes* a prompt. |
+| `SessionEnd` | `activity.jsonl` | The session is over. |
+
+[`src/hookActivity.ts`](../src/hookActivity.ts) folds those into a per-session state and
+[`HookActivityWatcher`](../src/HookActivityWatcher.ts) polls them every 4 seconds, feeding the same
+`pending` slot on `resolveDisplayStatus` that Bob's `PendingWatcher` uses.
+
+**It is a bracket, not a timer.** A prompt is open until a record closes it, which is what lets a
+stale `approval` be *retracted* rather than waiting out the 24-hour bound. A named prompt is closed
+only by its own tool — Claude runs several tools per turn, so an auto-approved `Read` finishing while
+an `ExitPlanMode` prompt is on screen proves nothing about that prompt. An unnamed one (a
+`permission_prompt` notification carries no tool name) is closed by the next completed call
+whatever it was, because over-holding is the worse failure: an `approval` nothing can clear has no
+timer to fall out of.
+
+So for Claude there are now two paths, and the asymmetry rule still governs which wins:
+
+- **With the plugin installed** — `approval` and `question` arrive in ~6 seconds, a question arrives
+  the moment the tool is called, and an ended session drops its blocked state immediately.
+- **Without it** — the transcript heuristic above, with its 45-second latency. Unchanged.
+
+Silence from the trail means "no hook told us anything", never "nothing is blocked" — hooks only fire
+where the plugin runs. The single exception is `SessionEnd`, which is a positive observation of an
+ending rather than an absence of evidence, and is therefore the one signal here allowed to *lower* a
+status.
+
+### Why a rate limit is `stalled` and not `approval`
+
+A tool call and a rate limit look identical from outside: a transcript that stops moving. The 45
+second rule read that silence as a permission prompt — so a rate-limited session claimed to be
+blocked on you, and because `approval` is never aged out of the worklist it pinned itself to the top
+of the list on the strength of a prompt that did not exist and that you could not clear.
+
+Claude writes a synthetic `assistant` record for a failed API call (`isApiErrorMessage: true`, text
+beginning `API Error:`), and it is checked **before** the tool-call branch — otherwise the walk skips
+it, reaches the call underneath, and reports a call the API never answered as waiting on you.
+Compaction is treated the same way: it writes nothing while it runs and then resumes on its own, so
+it is `working` briefly and `stalled` if it never returns.
+
+`stalled` is deliberately **not** blocked-on-you. There is nothing to click, so it stays subject to
+the worklist's normal age bound instead of being exempt from it.
 
 ### Four deliberately bounded timers
 
@@ -221,7 +279,7 @@ that split:
 | State | Kept in the worklist? |
 |---|---|
 | `approval`, `question` | **Always**, at any age |
-| `working` | Yes, while updated in the last 2 hours |
+| `working`, `stalled` | Yes, while updated in the last 2 hours |
 | `finished`, `seen`, `dormant` | No — unless a probe reports the session open |
 
 A live report from an extension host outranks all of this and keeps a session in the worklist at any
@@ -238,7 +296,9 @@ never change again.
 
 | File | Role |
 |---|---|
-| [`src/sessionStatus.ts`](../src/sessionStatus.ts) | Every rule on this page, as pure functions. No `vscode`, no I/O, no clock of its own — time is always an argument, which is what makes all six states testable. |
+| [`src/hookActivity.ts`](../src/hookActivity.ts) | Folds the plugin's own hook records into a per-session live state. Pure; the bracket rules live here. |
+| [`src/HookActivityWatcher.ts`](../src/HookActivityWatcher.ts) | Polls the two trail files every 4s and hands the panel a snapshot. |
+| [`src/sessionStatus.ts`](../src/sessionStatus.ts) | Every rule on this page, as pure functions. No `vscode`, no I/O, no clock of its own — time is always an argument, which is what makes every state testable. |
 | [`src/SessionManager.ts`](../src/SessionManager.ts) | Reads the transcript tail and the Bob rows, and hands them to the classifier. I/O only. |
 | [`src/PendingWatcher.ts`](../src/PendingWatcher.ts) | Polls Bob's live pending approvals into a session-id → blocked-state map. |
 | [`src/SessionSitterViewProvider.ts`](../src/SessionSitterViewProvider.ts) | Folds the live signals and your read-stamps into the state actually shown — once, so the worklist filter, the sort and the row always agree. |

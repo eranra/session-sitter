@@ -13,26 +13,29 @@
  *
  * So the vocabulary now answers one question — *whose turn is it, and why* — and lives here as
  * pure functions: no `vscode`, no filesystem, no clock of its own. Time always arrives as an
- * argument. That is what lets all six states be unit-tested, and it keeps the rules in one file
+ * argument. That is what lets every state be unit-tested, and it keeps the rules in one file
  * instead of spread across the manager, the view provider and the exporter.
  *
  * The prose version of this file, for users, is `docs/STATUS-INDICATORS.md`. They must agree.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ABANDONED_TOOL_CALL_MS = exports.UNREAD_MAX_AGE_MS = exports.TOOL_STALL_MS = exports.PROMPT_WINDOW_MS = exports.STREAMING_WINDOW_MS = exports.SESSION_STATUSES = void 0;
+exports.COMPACTION_WINDOW_MS = exports.API_RETRY_WINDOW_MS = exports.ABANDONED_TOOL_CALL_MS = exports.UNREAD_MAX_AGE_MS = exports.TOOL_STALL_MS = exports.PROMPT_WINDOW_MS = exports.STREAMING_WINDOW_MS = exports.SESSION_STATUSES = void 0;
 exports.isQuestionTool = isQuestionTool;
 exports.pendingStatusForTool = pendingStatusForTool;
+exports.isApiError = isApiError;
+exports.isCompaction = isCompaction;
 exports.recordText = recordText;
 exports.carriesToolResult = carriesToolResult;
 exports.isInterruptMarker = isInterruptMarker;
 exports.claudeStatusFromTail = claudeStatusFromTail;
 exports.bobStatus = bobStatus;
 exports.resolveDisplayStatus = resolveDisplayStatus;
+exports.foldHookState = foldHookState;
 exports.isBlockedOnYou = isBlockedOnYou;
 exports.needsYou = needsYou;
 exports.isWorklistSignal = isWorklistSignal;
 /** Every state, in urgency order. Iterate this rather than re-listing the union. */
-exports.SESSION_STATUSES = ['approval', 'question', 'finished', 'working', 'seen', 'dormant'];
+exports.SESSION_STATUSES = ['approval', 'question', 'finished', 'working', 'stalled', 'seen', 'dormant'];
 // ── The four time windows every rule is built from ─────────────────────────────
 //
 // A transcript is an append-only log: the only liveness signal it carries is how long ago it was
@@ -81,6 +84,17 @@ exports.UNREAD_MAX_AGE_MS = 24 * 3600000;
  * with the file, which is exactly the case where the file is the one lying.
  */
 exports.ABANDONED_TOOL_CALL_MS = 24 * 3600000;
+/**
+ * How long after an API error a retry could still plausibly be in flight.
+ *
+ * Claude backs off and retries on its own, writing nothing in between, so this is "long enough that
+ * a real retry is not reported as a stall". Generous compared with the streaming window — a rate
+ * limit can hold for minutes — because the cost of being wrong is only that a stalled session reads
+ * as `working` a while longer, and neither state asks anything of you.
+ */
+exports.API_RETRY_WINDOW_MS = 5 * 60000;
+/** How long a compaction is given to finish before it is treated as a stall. */
+exports.COMPACTION_WINDOW_MS = 5 * 60000;
 // ── Question tools ────────────────────────────────────────────────────────────
 /**
  * The tools that ask the user something rather than doing something.
@@ -97,6 +111,54 @@ function isQuestionTool(toolName) {
 /** Which blocked state a pending tool call means. */
 function pendingStatusForTool(toolName) {
     return isQuestionTool(toolName) ? 'question' : 'approval';
+}
+/**
+ * Is this record Claude Code reporting that a request to the API failed?
+ *
+ * These are written as `type: 'assistant'` with `model: '<synthetic>'`, `isApiErrorMessage: true`,
+ * and text beginning `API Error:` — a rate limit, an overload, a DNS failure. Verified against real
+ * transcripts, where the observed text was `API Error: Can't reach the API server …`.
+ *
+ * Naming them matters because of what they do to the walk. Claude retries after one of these, and
+ * the retry writes nothing until it succeeds — so a rate-limited session is a transcript whose last
+ * record is a tool call, or this, with a growing silence after it. `toolCallStatus` reads that
+ * silence as `approval`, which is a false claim in the one state the worklist never ages out
+ * (`isBlockedOnYou`): the row pins itself to the top of the list on the strength of a prompt that
+ * does not exist and that you cannot clear, because there is nothing to answer.
+ *
+ * The three shapes are checked with `||` rather than `&&`. `isApiErrorMessage` alone is enough, and
+ * the others are fallbacks for versions that may not set it — a missed API error costs a false
+ * `approval`, so the detector errs toward recognising one.
+ */
+function isApiError(record) {
+    if (record.isApiErrorMessage === true) {
+        return true;
+    }
+    if (record.type !== 'assistant') {
+        return false;
+    }
+    if (record.message?.model === '<synthetic>' && recordText(record).startsWith('API Error')) {
+        return true;
+    }
+    return recordText(record).startsWith('API Error:');
+}
+/**
+ * Is this the record Claude Code writes when it compacts a conversation?
+ *
+ * Compaction rewrites the context and then resumes, and it writes nothing while it runs — so a
+ * transcript that ends here is *busy*, not blocked, and certainly not waiting on you. Left
+ * unrecognised it falls through to the "nothing conclusive" case and goes `dormant` after 30
+ * seconds, hiding a session that is about to start writing again.
+ *
+ * No compaction record appeared in the transcripts available when this was written, so the shape is
+ * matched permissively across the three plausible markers rather than pinned to one. A false
+ * positive here is cheap — it costs a `working` on a session that was going to be `dormant` — and
+ * the check is last in the walk, so it only ever decides a record nothing else claimed.
+ */
+function isCompaction(record) {
+    return record.isCompactSummary === true
+        || record.compactMetadata !== undefined
+        || record.type === 'compact-summary';
 }
 // Synthetic text Claude Code writes into a user-type record when you interrupt it. A marker,
 // not a prompt: a session whose transcript ends on one is finished, not awaiting a reply.
@@ -183,6 +245,18 @@ function claudeStatusFromTail(records, updatedAtMs, nowMs) {
     const quietMs = Math.max(0, nowMs - updatedAtMs);
     for (let i = records.length - 1; i >= 0; i--) {
         const record = records[i];
+        // Checked before anything else, because an API error is written as an `assistant` record and
+        // would otherwise be classified as ordinary assistant text — or, worse, be skipped so the walk
+        // reaches the tool call it interrupted and reports that call as blocked on you. Claude retries
+        // silently after one of these, so this is `working` while the retry could plausibly still be in
+        // flight and `stalled` once it cannot: never `approval`, because nobody is being asked anything.
+        if (isApiError(record)) {
+            return quietMs < exports.API_RETRY_WINDOW_MS ? 'working' : 'stalled';
+        }
+        if (isCompaction(record)) {
+            // Compaction writes nothing while it runs and then resumes on its own.
+            return quietMs < exports.COMPACTION_WINDOW_MS ? 'working' : 'stalled';
+        }
         if (carriesToolResult(record)) {
             // The last call came back and nothing was written after it. Either the agent is mid-turn, or
             // the turn was abandoned right there.
@@ -239,22 +313,30 @@ function bobStatus(dbStatus, pending) {
 /**
  * Turn the state derived from a file or a database row into the state actually shown.
  *
- * Two adjustments, and one deliberate non-adjustment:
+ * Three adjustments, and one deliberate non-adjustment:
  *
+ *  - The **hook state**, when the session runs our hooks, replaces an inference with an observation:
+ *    a prompt seen open becomes `approval`/`question` without waiting out `TOOL_STALL_MS`, and a
+ *    session seen *ending* drops a blocked state immediately instead of after a day.
  *  - A live pending approval or question **upgrades** whatever we inferred. The live read comes
- *    from the agent's extension host, which knows for certain.
+ *    from the agent's extension host, which knows for certain, so it outranks the hook trail.
  *  - A missing live signal never **downgrades** anything. The probe can only see the sessions in
  *    its own window, so "no pending approval reported" does not mean "no pending approval" — it
  *    routinely means the session is open in a different window. Treating silence as proof would
- *    turn every cross-window approval grey, which is the failure this design exists to fix.
+ *    turn every cross-window approval grey, which is the failure this design exists to fix. The same
+ *    reasoning covers the hook trail: no records means the plugin is not installed there, not that
+ *    the session is idle. Only an explicit `settled` may lower a state, because that is a positive
+ *    observation of an ending rather than an absence of evidence.
  *  - `finished` splits on whether you have looked since, and stops shouting once it is a day old.
  */
 function resolveDisplayStatus(base, input) {
+    // A live host read outranks everything: it is looking at the running process.
     if (input.pending) {
         return input.pending;
     }
-    if (base !== 'finished') {
-        return base;
+    const withHooks = foldHookState(base, input.hookState);
+    if (withHooks !== 'finished') {
+        return withHooks;
     }
     if (input.lastViewedMs !== undefined && input.lastViewedMs >= input.updatedAtMs) {
         return 'seen';
@@ -264,19 +346,61 @@ function resolveDisplayStatus(base, input) {
     }
     return 'finished';
 }
+/**
+ * Apply what the hooks observed to what the transcript implied.
+ *
+ * Lives here, beside the state it returns, so `resolveDisplayStatus` can reach it without importing
+ * `hookActivity.ts` — the dependency runs the other way. `applyHookState` there re-exports it.
+ *
+ * Ordered by how much each signal proves:
+ *
+ *  1. `pending` — a prompt was observed open. The strongest upgrade, and the point of the module:
+ *     an observation at ~6s replacing an inference at 45s.
+ *  2. `settled` — the session ended, so a blocked state is a zombie with no process left to answer
+ *     it. The one downgrade, and only away from the live states: `finished` and `seen` are both still
+ *     true of a session that ended, and are about reading rather than liveness.
+ *  3. `idle` — the agent's turn ended and nobody typed. Only promotes `working`, never touches a
+ *     blocked state.
+ */
+function foldHookState(base, state) {
+    if (!state) {
+        return base;
+    }
+    if (state.pending) {
+        return state.pending;
+    }
+    if (state.settled) {
+        return base === 'approval' || base === 'question' || base === 'working' || base === 'stalled'
+            ? 'dormant'
+            : base;
+    }
+    if (state.idle && base === 'working') {
+        return 'finished';
+    }
+    return base;
+}
 // ── Predicates the rest of the extension asks about a state ───────────────────
 //
-// Written as exhaustive `Record<SessionStatus, boolean>` maps on purpose. A seventh state would
+// Written as exhaustive `Record<SessionStatus, boolean>` maps on purpose. An eighth state would
 // then fail to compile here instead of silently falling through a comparison somewhere — and a
 // status the worklist filter does not recognise is how sessions get quietly hidden in History.
 const BLOCKED_ON_YOU = {
-    approval: true, question: true, finished: false, working: false, seen: false, dormant: false,
+    // `stalled` is deliberately false: it is blocked on the API, not on you, and there is nothing you
+    // could click. Marking it true would exempt it from the worklist's age bound and recreate the
+    // zombie row this release exists to remove.
+    approval: true, question: true, finished: false, working: false, stalled: false,
+    seen: false, dormant: false,
 };
 const NEEDS_YOU = {
-    approval: true, question: true, finished: true, working: false, seen: false, dormant: false,
+    // Nothing for you to do about a rate limit, so `stalled` does not ask for you.
+    approval: true, question: true, finished: true, working: false, stalled: false,
+    seen: false, dormant: false,
 };
 const WORKLIST_SIGNAL = {
-    approval: true, question: true, finished: false, working: true, seen: false, dormant: false,
+    // A stalled session is live work that has gone wrong — it belongs in the worklist, on the same
+    // recency terms as `working`, rather than being filed under History as though it had finished.
+    approval: true, question: true, finished: false, working: true, stalled: true,
+    seen: false, dormant: false,
 };
 /** Nothing moves until you act. These never age out of the worklist. */
 function isBlockedOnYou(status) {

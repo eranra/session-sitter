@@ -102,6 +102,9 @@ const INDICATOR = {
     question: { glyph: '?', label: 'question', color: 'yellow' },
     finished: { glyph: '◉', label: 'finished', color: 'green' },
     working: { glyph: '▸', label: 'working', color: 'cyan' },
+    // Red, alone among the states, because it is the only one reporting something *wrong* — a rate
+    // limit or an outage. Not amber: amber is reserved for "your turn", and a stall is not your turn.
+    stalled: { glyph: '⏸', label: 'stalled', color: 'red' },
     seen: { glyph: '·', label: 'seen', color: 'gray' },
     dormant: { glyph: '○', label: 'dormant', color: 'gray' },
 };

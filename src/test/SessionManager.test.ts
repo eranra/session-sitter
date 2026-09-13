@@ -575,7 +575,6 @@ conn.close()
 function insertBobMessage(dbPath: string, msg: {
   id: string; taskId: string; role: string; content: string; ts: number;
 }): void {
-  const data = JSON.stringify({ role: msg.role, content: msg.content });
   execFileSync('python3', ['-c', `
 import sqlite3, json
 conn = sqlite3.connect('${dbPath}')

@@ -59,13 +59,15 @@ export function activate(context: vscode.ExtensionContext) {
   // deterministic `autoRespond` decisions are recorded there and they must never be invisible.
   // `state.explicit` (the user actually set `supervisorStateDir`) is what still gates the AI
   // supervisor, which shells out to a classifier CLI and therefore stays opt-in.
+  // Resolving creates it: the file log and the activity feed both point inside it, a defaulted
+  // global-storage path does not exist on a fresh install, and a CONFIGURED path that cannot be
+  // created must fall back rather than throw — a `mkdir` out of `activate()` takes down the panel
+  // and Telegram along with supervision.
   const supervisionCfg = () => vscode.workspace.getConfiguration('sessionSitter');
   const state = resolveStateDir(
-    supervisionCfg().get<string>('supervisorStateDir', ''), context.globalStorageUri.fsPath);
+    supervisionCfg().get<string>('supervisorStateDir', ''), context.globalStorageUri.fsPath,
+    dir => fs.mkdirSync(dir, { recursive: true }));
   const stateDir = state.dir;
-  // Create it up front: the file log and the activity feed both point inside it, and a defaulted
-  // global-storage path does not exist on a fresh install.
-  try { fs.mkdirSync(stateDir, { recursive: true }); } catch { /* best-effort */ }
 
   // Shared output channel for logging. Also mirror to a durable file under the state dir: in a
   // multi-window (or WSL) setup the in-memory Output channel is per-extension-host and easy to
@@ -81,6 +83,15 @@ export function activate(context: vscode.ExtensionContext) {
   };
   log(`Session Sitter activated — build v${BUILD_VERSION} @ ${BUILD_TIME}`);
   log(`state dir: ${stateDir}${state.explicit ? '' : ' (default — set sessionSitter.supervisorStateDir to move it)'}`);
+  if (state.unusable) {
+    // Loud, because the records are now somewhere the user did not choose. A path copied from
+    // another machine is the usual cause — a Linux `supervisorStateDir` opened on macOS, where
+    // `/home` cannot be written at all.
+    log(`sessionSitter.supervisorStateDir is set to ${state.unusable.configured}, which could not `
+      + `be created (${state.unusable.reason}). Falling back to the state dir above: records and `
+      + 'the activity feed are written there, and the AI supervisor stays off until the setting '
+      + 'points somewhere writable.');
+  }
 
   const sender = new InspectorBobSender(log);
   const approver = new InspectorBobApprover(log);
@@ -345,7 +356,13 @@ export function activate(context: vscode.ExtensionContext) {
   // Built unconditionally: `autoRespond` rules act on the user's session with no supervisor and no
   // configuration at all, so their record and their notification can never be conditional on a
   // setting. The state dir always resolves, so there is always somewhere to write them.
-  ensureDirs(supervisorConfig);
+  // Best-effort, and deliberately not fatal: every writer creates the directory it needs when it
+  // needs it (`store.ts`, `messaging.ts`, `agentControl.ts` all `mkdir` recursively), so this is a
+  // convenience rather than a precondition — and nothing here is worth losing the whole extension
+  // over. The state dir itself is already created by `resolveStateDir`.
+  try { ensureDirs(supervisorConfig); } catch (e) {
+    log(`state dirs: ${String(e)} — each writer will create what it needs instead`);
+  }
   const baseChannel: MessagingChannel = buildChannel(
     supervisorConfig, log,
     remoteControlActive ? () => supervisionUpdates.drain() : undefined);

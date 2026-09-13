@@ -5,6 +5,43 @@ single name — **Session Sitter** — and `ci/check-naming.sh` enforces that.
 
 ## Unreleased
 
+### Clicking a side bar session focuses it, instead of duplicating it into the editor
+
+A session living in the secondary side bar was a click that opened a *second* copy of it as an
+editor panel in the main area, beside the one already on screen. The three-way split in
+`_openClaudeSessionLocal` was right; the fact it consulted was not.
+
+It asked the `claudeCode.preferredLocation` **setting** whether the user's Claude layout is the side
+bar. That setting records how Claude was last *asked* to open, not where its view is. Only
+`claude-vscode.sidebar.open` ever writes `'sidebar'`, and Claude registers
+`claudeVSCodeSidebarSecondary` as a webview view in the `secondarySidebar` container — so revealing
+it from VS Code's own UI puts the session on screen while the setting still reads `'panel'`. The side
+bar branch was then skipped and control fell through to "no open view here", whose remedy is
+`primaryEditor.open`, whose implementation is Claude's `createPanel`. Hence the duplicate.
+
+The window is now asked instead of the settings file. `ClaudeOpenState` carries a third fact next to
+`panels` and `states` — `sidebar`, read from the manager's own `sidebarComms`, which Claude sets when
+the side bar view resolves and clears when it is disposed. It is true for either container, because
+one provider serves both, and it cannot disagree with what is on screen.
+
+Two properties come out of doing it this way:
+
+- **The side bar is aimed at a session, not merely focused.** The former "known limit" — that we
+  could focus the side bar but not tell it *which* conversation to show — is gone.
+  `revealClaudeSessionInSidebar` drives the manager's `activateInSidebar`, the same entry point
+  Claude's own `editor.open` uses when it routes to the side bar, and reveals the view through the
+  manager's webview entry rather than a `*.focus` command. That matters: one provider serves two view
+  ids, so a view id is a guess, and focusing the wrong one *resolves* it — spawning a second side bar
+  instead of revealing the live one.
+- **The user's settings are left alone.** The old path's remedy, `claude-vscode.sidebar.open`,
+  rewrites `preferredLocation` to `'sidebar'` as a side effect. Switching sessions is not a
+  preference change, so it no longer runs.
+
+A regression guard states the bug as its own test: side bar view live, setting reading `'panel'`, and
+the click must not reach `primaryEditor.open`. Its mirror is tested too — setting reading `'sidebar'`
+with no side bar view resolved must still open by id, rather than aiming at a container that is not
+there.
+
 ### The team tier becomes reachable, from two machines and not one
 
 `session-sitter learn` could propose a user clause and a project clause but never a team clause, and the

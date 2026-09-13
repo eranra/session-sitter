@@ -7,7 +7,7 @@ import { randomBytes } from 'crypto';
 import { SessionManager, ClaudeSession, MessageExchange } from './SessionManager';
 import { readLiveWindows, writeWindowEntry, removeWindowEntry, discoverOwnIpcSocket, detectIdeCli, isAttendedWindow, type WindowEntry } from './WindowRegistry';
 import { getOpenBobTaskIds } from './agents/BobInspector';
-import { getOpenClaudeSessionIds } from './agents/ClaudeInspector';
+import { getOpenClaudeSessionIds, revealClaudeSessionInSidebar } from './agents/ClaudeInspector';
 import { BUILD_TIME, BUILD_VERSION } from './buildInfo';
 import { SupervisionActivity, type ActivityItem } from './SupervisionActivity';
 import { uploadSession } from './corpus/upload';
@@ -88,6 +88,22 @@ type WorkspaceColorRules = Record<string, unknown>;
 
 function getNonce(): string {
   return randomBytes(16).toString('hex');
+}
+
+/**
+ * Which side bar view id holds Claude's chat, for the fallback focus path.
+ *
+ * Claude registers ONE provider for two view ids and picks between them on VS Code
+ * version alone — `claudeVSCodeSidebarSecondary` from 1.106, where the secondary side
+ * bar exists, and `claudeVSCodeSidebar` before it. Mirrored here so the fallback lands
+ * in the same container Claude itself would use. Exported for the unit test.
+ */
+export function claudeSidebarViewId(version: string = vscode.version): string {
+  const parts = version.split('.').map(Number);
+  const major = Number.isFinite(parts[0]) ? parts[0] : 0;
+  const minor = Number.isFinite(parts[1]) ? parts[1] : 0;
+  const hasSecondary = major > 1 || (major === 1 && minor >= 106);
+  return hasSecondary ? 'claudeVSCodeSidebarSecondary' : 'claudeVSCodeSidebar';
 }
 
 export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
@@ -538,18 +554,24 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
    *     exactly right here: it reveals that panel in whatever editor group it sits in and
    *     creates nothing. This is also Claude's own definition of "open": it broadcasts
    *     `sessionPanels.keys()` to its UI as `openSessionIds`.
-   *  2. **Held by this window but not an editor panel, while the user's Claude layout is
-   *     the side bar** — then the side bar is where it is showing, so focus that.
-   *     `claude-vscode.sidebar.open` is the extension's own entry point and picks
-   *     `claudeVSCodeSidebarSecondary` or `claudeVSCodeSidebar` per host support.
-   *  3. **Anything else** (a closed or older session, or panel layout) — open it by id,
-   *     which reopens the conversation. Pre-existing behaviour, unchanged.
+   *  2. **Held by this window but not an editor panel, while Claude's side bar view is
+   *     live** — then the side bar is where it is showing, so drive the side bar to that
+   *     session and bring it forward.
+   *  3. **Anything else** (a closed or older session, or no side bar view) — open it by
+   *     id, which reopens the conversation. Pre-existing behaviour, unchanged.
    *
-   * Known limit: Claude exposes no per-session side bar API and does not track which
-   * session the side bar is showing — `sessionStates` accumulates, and the side bar's
-   * session-change reports are discarded by its manager. So in case 2 we can focus the
-   * side bar but not force it to a specific session. That still beats opening a duplicate
-   * panel, and it matches what Claude's own `editor.openLast` does.
+   * Case 2 asks the *window* where the view is, via `sidebarComms`, and not the
+   * `claudeCode.preferredLocation` setting, which is what it used to do and was the bug:
+   * that setting records how Claude was last **asked** to open, not where its view is.
+   * Only `claude-vscode.sidebar.open` ever writes 'sidebar', so a user who reveals the
+   * Claude view from VS Code's own UI — the View menu, or the secondary side bar's own
+   * icon — has the session on screen in the side bar while the setting still reads
+   * 'panel'. We then failed case 2 and fell to case 3, opening a duplicate panel in the
+   * main editor area for a session already visible beside it.
+   *
+   * The former "known limit" — that we could focus the side bar but not aim it at a
+   * session — is gone: `revealClaudeSessionInSidebar` calls the manager's own
+   * `activateInSidebar`, the same entry point Claude's `editor.open` uses for this.
    */
   private async _openClaudeSessionLocal(sessionId: string): Promise<void> {
     const state = await getOpenClaudeSessionIds(this._log);
@@ -560,27 +582,24 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
       return;
     }
 
-    if (state.states.includes(sessionId) && this._claudePrefersSidebar()) {
-      this._log(`switch: ${sessionId} is held by this window in side bar layout — focusing the side bar`);
-      void vscode.commands.executeCommand('claude-vscode.sidebar.open');
-      return;
+    if (state.states.includes(sessionId) && state.sidebar) {
+      this._log(`switch: ${sessionId} is held by this window and Claude's side bar view is live — revealing it there`);
+      const outcome = await revealClaudeSessionInSidebar(sessionId, this._log);
+      if (outcome === 'revealed') { return; }
+      if (outcome === 'activated') {
+        // The side bar took the session but we could not reach its view object to bring
+        // it forward. Focus it by id as a fallback — a guess between the two containers,
+        // which is why it is not the primary path.
+        const viewId = claudeSidebarViewId();
+        this._log(`switch: side bar took ${sessionId}; focusing ${viewId} by id`);
+        void vscode.commands.executeCommand(`${viewId}.focus`);
+        return;
+      }
+      this._log(`switch: side bar would not take ${sessionId} — falling back to opening it by id`);
     }
 
     this._log(`switch: ${sessionId} has no open view here — opening it by id`);
     void vscode.commands.executeCommand('claude-vscode.primaryEditor.open', sessionId);
-  }
-
-  /**
-   * Whether Claude is configured to open conversations in the side bar.
-   *
-   * `claudeCode.preferredLocation` ('sidebar' | 'panel', default 'panel') is a normal
-   * setting, so we read it directly — no inspector needed. Claude keeps it current on its
-   * own: `sidebar.open` writes 'sidebar' and `editor.open` writes 'panel', so it tracks
-   * where the user last opened Claude. We mirror Claude's own comparison, where anything
-   * that is not exactly 'sidebar' means panel.
-   */
-  private _claudePrefersSidebar(): boolean {
-    return vscode.workspace.getConfiguration('claudeCode').get<string>('preferredLocation') === 'sidebar';
   }
 
   // Returns labels of all currently open Claude Code or Bob editor tabs.

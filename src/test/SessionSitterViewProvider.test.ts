@@ -43,6 +43,9 @@ vi.mock('vscode', () => {
   };
   return {
     EventEmitter,
+    // Claude picks its side bar view id from the VS Code version alone; 1.106+ has the
+    // secondary side bar, which is the layout the side bar tests describe.
+    version: '1.106.0',
     workspace: {
       createFileSystemWatcher: vi.fn(() => new FileSystemWatcher()),
       getConfiguration: mockGetConfiguration,
@@ -116,16 +119,23 @@ vi.mock('../WindowRegistry', async (importOriginal) => {
 // The real probe reaches Claude's live extension host over the V8 inspector, which
 // does not exist under test. Stubbing it lets us state exactly WHERE a session is
 // open — as an editor panel, or held by the window with no panel (the side bar).
-const { mockGetOpenClaudeSessionIds } = vi.hoisted(() => ({
+const { mockGetOpenClaudeSessionIds, mockRevealInSidebar } = vi.hoisted(() => ({
   mockGetOpenClaudeSessionIds: vi.fn(),
+  mockRevealInSidebar: vi.fn(),
 }));
 vi.mock('../agents/ClaudeInspector', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../agents/ClaudeInspector')>();
-  return { ...actual, getOpenClaudeSessionIds: mockGetOpenClaudeSessionIds };
+  return {
+    ...actual,
+    getOpenClaudeSessionIds: mockGetOpenClaudeSessionIds,
+    revealClaudeSessionInSidebar: mockRevealInSidebar,
+  };
 });
 
 /** Point the stubbed probe at a given layout. Defaults to "this window holds nothing". */
-function setClaudeOpenState(state: { panels?: string[]; states?: string[]; active?: string | null }): void {
+function setClaudeOpenState(
+  state: { panels?: string[]; states?: string[]; active?: string | null; sidebar?: boolean },
+): void {
   const panels = state.panels ?? [];
   const states = state.states ?? [];
   mockGetOpenClaudeSessionIds.mockResolvedValue({
@@ -133,6 +143,9 @@ function setClaudeOpenState(state: { panels?: string[]; states?: string[]; activ
     panels,
     states,
     active: state.active ?? null,
+    // Whether Claude's side bar view is resolved in this window. Defaults to false, so a
+    // test must say so explicitly to get the side bar branch.
+    sidebar: state.sidebar ?? false,
   });
 }
 
@@ -150,7 +163,7 @@ function setClaudePreferredLocation(location: 'sidebar' | 'panel'): void {
 vi.mock('child_process', () => ({ execFile: vi.fn() }));
 
 import * as vscode from 'vscode';
-import { SessionSitterViewProvider } from '../SessionSitterViewProvider';
+import { SessionSitterViewProvider, claudeSidebarViewId } from '../SessionSitterViewProvider';
 import { SessionManager } from '../SessionManager';
 import { execFile } from 'child_process';
 
@@ -397,6 +410,8 @@ describe('_openSessionLocal', () => {
     setOpenClaudeTabs([]);
     setClaudeOpenState({});
     setClaudePreferredLocation('panel');
+    mockRevealInSidebar.mockReset();
+    mockRevealInSidebar.mockResolvedValue('revealed');
   });
   afterEach(() => {
     setOpenClaudeTabs([]);
@@ -413,49 +428,82 @@ describe('_openSessionLocal', () => {
     expect(mockExecuteCommand).not.toHaveBeenCalledWith('claude-vscode.sidebar.open');
   });
 
-  it('focuses the side bar for a live session that has no editor panel, in side bar layout', async () => {
-    // The reported bug: the session is live in the secondary side bar, so it is held by
-    // the window but absent from sessionPanels. Opening it "by id" made Claude create a
-    // SECOND view of a session already on screen. It must focus the side bar instead.
-    setClaudeOpenState({ panels: [], states: ['sess-1'] });
-    setClaudePreferredLocation('sidebar');
-    const p = makeProvider([session]) as unknown as Openable;
-    await p._openSessionLocal('sess-1');
-    expect(mockExecuteCommand).toHaveBeenCalledWith('claude-vscode.sidebar.open');
-    expect(mockExecuteCommand).not.toHaveBeenCalledWith('claude-vscode.primaryEditor.open', 'sess-1');
-  });
-
-  it('prefers the editor panel over the side bar when the session has both', async () => {
-    // A panel is an unambiguous, per-session target; the side bar is not. Panel wins.
-    setClaudeOpenState({ panels: ['sess-1'], states: ['sess-1'] });
-    setClaudePreferredLocation('sidebar');
-    const p = makeProvider([session]) as unknown as Openable;
-    await p._openSessionLocal('sess-1');
-    expect(mockExecuteCommand).toHaveBeenCalledWith('claude-vscode.primaryEditor.open', 'sess-1');
-    expect(mockExecuteCommand).not.toHaveBeenCalledWith('claude-vscode.sidebar.open');
-  });
-
-  it('opens by id in panel layout even when the window holds the session', async () => {
-    // Panel layout means conversations live in editor panels, so there is no side bar
-    // view to focus — open it by id.
-    setClaudeOpenState({ panels: [], states: ['sess-1'] });
+  it('reveals a side bar session there even though preferredLocation says panel', async () => {
+    // The reported bug, and the regression guard for its cause. The session is live in the
+    // secondary side bar — held by the window, absent from sessionPanels — but the setting
+    // reads 'panel', because only `claude-vscode.sidebar.open` writes 'sidebar' and the
+    // user revealed the view from VS Code's own UI. Gating on the setting sent this to
+    // `primaryEditor.open`, which duplicated an on-screen session into the main editor.
+    // The window's own `sidebar` fact must decide instead.
+    setClaudeOpenState({ panels: [], states: ['sess-1'], sidebar: true });
     setClaudePreferredLocation('panel');
     const p = makeProvider([session]) as unknown as Openable;
     await p._openSessionLocal('sess-1');
-    expect(mockExecuteCommand).toHaveBeenCalledWith('claude-vscode.primaryEditor.open', 'sess-1');
+    expect(mockRevealInSidebar).toHaveBeenCalledWith('sess-1', expect.any(Function));
+    expect(mockExecuteCommand).not.toHaveBeenCalledWith('claude-vscode.primaryEditor.open', 'sess-1');
+  });
+
+  it('aims the side bar at the session instead of only focusing the side bar', async () => {
+    // `sidebar.open` focused the side bar without saying which session, so it showed
+    // whatever it already had. The reveal goes through Claude's `activateInSidebar`, so
+    // the id must reach it — and `sidebar.open` must not be used, since it also rewrites
+    // the user's preferredLocation setting as a side effect.
+    setClaudeOpenState({ panels: [], states: ['sess-1'], sidebar: true });
+    const p = makeProvider([session]) as unknown as Openable;
+    await p._openSessionLocal('sess-1');
+    expect(mockRevealInSidebar).toHaveBeenCalledWith('sess-1', expect.any(Function));
     expect(mockExecuteCommand).not.toHaveBeenCalledWith('claude-vscode.sidebar.open');
   });
 
-  it('opens a closed session by id rather than focusing the side bar', async () => {
-    // Not in panels and not held by this window at all: nothing to focus. Reopen by id.
-    // Regression guard for the old `sidebar.open` fallback, which did not target a
-    // specific session, so a closed session appeared to "not be found".
-    setClaudeOpenState({ panels: [], states: [] });
+  it('focuses the side bar view by id when the reveal could not bring it forward', async () => {
+    // The manager took the session but we could not reach its view object. Fall back to
+    // the view id rather than opening a duplicate panel.
+    setClaudeOpenState({ panels: [], states: ['sess-1'], sidebar: true });
+    mockRevealInSidebar.mockResolvedValue('activated');
+    const p = makeProvider([session]) as unknown as Openable;
+    await p._openSessionLocal('sess-1');
+    expect(mockExecuteCommand).toHaveBeenCalledWith('claudeVSCodeSidebarSecondary.focus');
+    expect(mockExecuteCommand).not.toHaveBeenCalledWith('claude-vscode.primaryEditor.open', 'sess-1');
+  });
+
+  it('opens by id when the side bar refuses the session', async () => {
+    // No live side bar to receive the activation after all. Degrade to the old behaviour
+    // rather than leaving the click doing nothing.
+    setClaudeOpenState({ panels: [], states: ['sess-1'], sidebar: true });
+    mockRevealInSidebar.mockResolvedValue('unavailable');
+    const p = makeProvider([session]) as unknown as Openable;
+    await p._openSessionLocal('sess-1');
+    expect(mockExecuteCommand).toHaveBeenCalledWith('claude-vscode.primaryEditor.open', 'sess-1');
+  });
+
+  it('prefers the editor panel over the side bar when the session has both', async () => {
+    // A panel is an unambiguous, per-session target. Panel wins.
+    setClaudeOpenState({ panels: ['sess-1'], states: ['sess-1'], sidebar: true });
+    const p = makeProvider([session]) as unknown as Openable;
+    await p._openSessionLocal('sess-1');
+    expect(mockExecuteCommand).toHaveBeenCalledWith('claude-vscode.primaryEditor.open', 'sess-1');
+    expect(mockRevealInSidebar).not.toHaveBeenCalled();
+  });
+
+  it('opens by id when no side bar view exists, whatever preferredLocation claims', async () => {
+    // The mirror of the bug: the setting says 'sidebar' but no side bar view is resolved,
+    // so there is nothing to reveal and aiming at one would focus an empty container.
+    setClaudeOpenState({ panels: [], states: ['sess-1'], sidebar: false });
     setClaudePreferredLocation('sidebar');
     const p = makeProvider([session]) as unknown as Openable;
     await p._openSessionLocal('sess-1');
     expect(mockExecuteCommand).toHaveBeenCalledWith('claude-vscode.primaryEditor.open', 'sess-1');
-    expect(mockExecuteCommand).not.toHaveBeenCalledWith('claude-vscode.sidebar.open');
+    expect(mockRevealInSidebar).not.toHaveBeenCalled();
+  });
+
+  it('opens a closed session by id rather than aiming at the side bar', async () => {
+    // Not in panels and not held by this window at all: nothing to reveal, even with a
+    // live side bar. Reopen by id.
+    setClaudeOpenState({ panels: [], states: [], sidebar: true });
+    const p = makeProvider([session]) as unknown as Openable;
+    await p._openSessionLocal('sess-1');
+    expect(mockExecuteCommand).toHaveBeenCalledWith('claude-vscode.primaryEditor.open', 'sess-1');
+    expect(mockRevealInSidebar).not.toHaveBeenCalled();
   });
 
   it('falls back to opening by id when the probe cannot reach Claude', async () => {
@@ -1553,5 +1601,25 @@ describe('window attention', () => {
     mockReadLiveWindows.mockResolvedValue([windowEntry(40)]);
 
     expect(await worklist(makeProvider([session('c-abandoned', 5)]))).toEqual(['c-abandoned']);
+  });
+});
+
+describe('claudeSidebarViewId', () => {
+  // Claude registers one provider for two view ids and chooses between them on the VS Code
+  // version alone. Mirrored so our fallback focus lands in the container Claude uses.
+  it('uses the secondary side bar from 1.106 onward', () => {
+    expect(claudeSidebarViewId('1.106.0')).toBe('claudeVSCodeSidebarSecondary');
+    expect(claudeSidebarViewId('1.107.2')).toBe('claudeVSCodeSidebarSecondary');
+    expect(claudeSidebarViewId('2.0.0')).toBe('claudeVSCodeSidebarSecondary');
+  });
+
+  it('uses the activity bar side bar before 1.106, where no secondary side bar exists', () => {
+    expect(claudeSidebarViewId('1.105.9')).toBe('claudeVSCodeSidebar');
+    expect(claudeSidebarViewId('1.64.0')).toBe('claudeVSCodeSidebar');
+  });
+
+  it('falls back to the activity bar side bar for an unparseable version', () => {
+    expect(claudeSidebarViewId('')).toBe('claudeVSCodeSidebar');
+    expect(claudeSidebarViewId('nonsense')).toBe('claudeVSCodeSidebar');
   });
 });

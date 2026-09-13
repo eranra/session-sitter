@@ -51,7 +51,7 @@ function harness(opts: {
       readOpen: async () => {
         const panels = opts.panelsOverTime[Math.min(probe, opts.panelsOverTime.length - 1)] ?? [];
         probe++;
-        return { open: panels, panels, states: [], active: null };
+        return { open: panels, panels, states: [], active: null, sidebar: false };
       },
       ...(opts.noSender === true ? {} : {
         sendToSession: async (id: string, text: string) => {
@@ -96,7 +96,7 @@ describe('launching a Claude session', () => {
     const launcher = new VsCodeSessionLauncher(() => { /* quiet */ }, undefined, {
       readOpen: async () => {
         probeOrder.push(executed.length === 0 ? 'before-open' : 'after-open');
-        return { open: [], panels: executed.length === 0 ? [] : ['new-1'], states: [], active: null };
+        return { open: [], panels: executed.length === 0 ? [] : ['new-1'], states: [], active: null, sidebar: false };
       },
       sendToSession: async () => 'ok:matched',
       sleep: async () => { /* no waiting */ },

@@ -7,6 +7,7 @@ export interface ClaudeOpenState {
   panels: string[];      // sessions open as EDITOR PANELS (sessionPanels keys)
   states: string[];      // every session the manager holds (sessionStates keys)
   active: string | null; // the focused session id (activeSessionId) — panels only
+  sidebar: boolean;      // is Claude's side bar view RESOLVED in this window (sidebarComms)?
   diag?: string;         // how the probe resolved (for debugging reachability)
 }
 
@@ -24,8 +25,17 @@ export interface ClaudeOpenState {
 //     restore is declined (`cT0`), never when the sidebar switches session, and
 //     growth is bounded only by a size cap (`gT0`). So it means "this window's
 //     manager knows this session" — NOT "this session is visible right now".
-// Merging the two (what we used to do) throws the location away, which is why we
-// could not tell a sidebar session from a closed one.
+//   - sidebarComms: the comms object of the side bar webview view. Claude sets it
+//     in `resolveWebviewView` and clears it on dispose, so `!!sidebarComms` is the
+//     window's live answer to "does Claude's side bar view exist right now" — for
+//     EITHER container, since Claude registers one provider for both
+//     `claudeVSCodeSidebar` and `claudeVSCodeSidebarSecondary`. We read this rather
+//     than the `claudeCode.preferredLocation` setting because that setting records
+//     how Claude was last *asked* to open, not where its view actually is: only
+//     `claude-vscode.sidebar.open` writes 'sidebar', so revealing the secondary side
+//     bar from VS Code's own UI leaves it reading 'panel' while the view is on screen.
+// Merging panels and states (what we used to do) throws the location away, which is
+// why we could not tell a sidebar session from a closed one.
 const READ_OPEN_FN = `function(){
   try {
     var panels = [], states = [];
@@ -35,7 +45,10 @@ const READ_OPEN_FN = `function(){
     if (this.sessionStates && typeof this.sessionStates.keys === 'function') {
       for (var b of this.sessionStates.keys()) states.push(b);
     }
-    return JSON.stringify({ panels: panels, states: states, active: this.activeSessionId || null });
+    return JSON.stringify({
+      panels: panels, states: states, active: this.activeSessionId || null,
+      sidebar: !!this.sidebarComms,
+    });
   } catch (e) { return JSON.stringify({ panels: [], states: [], active: null, err: String(e) }); }
 }`;
 
@@ -69,7 +82,7 @@ function findClaudeActivate(): ((...args: unknown[]) => unknown) | string {
   return `DIAG:activate-not-fn (claudeModules=${matches.length})`;
 }
 
-const EMPTY_OPEN_STATE: ClaudeOpenState = { open: [], panels: [], states: [], active: null };
+const EMPTY_OPEN_STATE: ClaudeOpenState = { open: [], panels: [], states: [], active: null, sidebar: false };
 
 /** Dedupe and drop non-string / empty entries from a raw id array. */
 function cleanIds(value: unknown): string[] {
@@ -102,11 +115,16 @@ export function statesWithoutPanel(state: ClaudeOpenState): string[] {
 export function parseClaudeOpenState(raw: unknown): ClaudeOpenState {
   if (typeof raw !== 'string') { return { ...EMPTY_OPEN_STATE }; }
   try {
-    const p = JSON.parse(raw) as { panels?: unknown; states?: unknown; active?: unknown };
+    const p = JSON.parse(raw) as {
+      panels?: unknown; states?: unknown; active?: unknown; sidebar?: unknown;
+    };
     const panels = cleanIds(p.panels);
     const states = cleanIds(p.states);
     const active = typeof p.active === 'string' && p.active.length > 0 ? p.active : null;
-    return { open: [...new Set([...panels, ...states])], panels, states, active };
+    return {
+      open: [...new Set([...panels, ...states])], panels, states, active,
+      sidebar: p.sidebar === true,
+    };
   } catch {
     return { ...EMPTY_OPEN_STATE };
   }
@@ -285,10 +303,12 @@ export async function getOpenClaudeSessionIds(log: (msg: string) => void): Promi
   const { raw, diag } = await callOnClaudeManager(READ_OPEN_FN, log);
   const state = parseClaudeOpenState(raw);
   state.diag = diag === 'ok'
-    ? `ok (panels=${state.panels.length}, states=${state.states.length})`
+    ? `ok (panels=${state.panels.length}, states=${state.states.length}, sidebar=${state.sidebar})`
     : diag;
   if (diag === 'ok') {
-    log(`claude inspector: panels=[${state.panels.join(', ')}] states=[${state.states.join(', ')}] active=${state.active}`);
+    log(
+      `claude inspector: panels=[${state.panels.join(', ')}] states=[${state.states.join(', ')}] `
+      + `active=${state.active} sidebar=${state.sidebar}`);
     // Called out separately, because it is buried in the line above and it is the difference between
     // "this window holds two sessions" and "this window has held twenty since it started".
     const orphans = statesWithoutPanel(state);
@@ -299,6 +319,73 @@ export async function getOpenClaudeSessionIds(log: (msg: string) => void): Promi
     }
   }
   return state;
+}
+
+/**
+ * How a side bar reveal resolved. `revealed` means the side bar is now showing this
+ * session; `activated` means Claude accepted the session switch but we could not find
+ * its view object to bring forward, so the caller should focus the view by id.
+ */
+export type SidebarRevealOutcome = 'revealed' | 'activated' | 'unavailable';
+
+/**
+ * Show `sessionId` in Claude's side bar view, and bring that view forward.
+ *
+ * This is the pair of steps Claude's own `claude-vscode.editor.open` takes when it
+ * routes to the side bar, driven directly instead of through that command — which
+ * would consult `preferredLocation` and, worse, rewrite it.
+ *
+ *  - `activateInSidebar(id)` parks a pending activation and delivers it to
+ *    `sidebarComms.notifyActivateSession(id)`. This is what makes the side bar switch
+ *    to a specific conversation; without it we could only focus whatever it already
+ *    showed. It is a no-op if the side bar view is gone, hence the `sidebarComms`
+ *    guard: we only claim success when there is a live view to receive it.
+ *  - `reveal()` on the manager's own webview entry for that comms object calls
+ *    `WebviewView.show()`. We go through the entry rather than executing
+ *    `claudeVSCodeSidebar*.focus` because one provider serves both the primary and
+ *    the secondary side bar, so a view id is a guess — and focusing the wrong id
+ *    RESOLVES it, spawning a second side bar instead of revealing the live one.
+ *    `reveal()` acts on the view that actually exists, in whichever container.
+ */
+export async function revealClaudeSessionInSidebar(
+  sessionId: string,
+  log: (msg: string) => void,
+): Promise<SidebarRevealOutcome> {
+  const fn = `function(){
+  try {
+    if (!this.sidebarComms) return JSON.stringify({ ok: false, reason: 'no-sidebar' });
+    if (typeof this.activateInSidebar !== 'function') return JSON.stringify({ ok: false, reason: 'no-activateInSidebar' });
+    this.activateInSidebar(${JSON.stringify(sessionId)}, undefined);
+    var revealed = false;
+    try {
+      if (this.webviews && typeof this.webviews[Symbol.iterator] === 'function') {
+        for (var w of this.webviews) {
+          if (w && w.comms === this.sidebarComms && typeof w.reveal === 'function') {
+            w.reveal(); revealed = true; break;
+          }
+        }
+      }
+    } catch (e) {}
+    return JSON.stringify({ ok: true, revealed: revealed });
+  } catch (e) { return JSON.stringify({ ok: false, reason: String(e) }); }
+}`;
+  const { raw, diag } = await callOnClaudeManager(fn, log);
+  if (typeof raw !== 'string') {
+    log(`claude inspector: sidebar reveal unreachable (${diag})`);
+    return 'unavailable';
+  }
+  try {
+    const p = JSON.parse(raw) as { ok?: unknown; revealed?: unknown; reason?: unknown };
+    if (p.ok !== true) {
+      log(`claude inspector: sidebar reveal declined (${String(p.reason)})`);
+      return 'unavailable';
+    }
+    log(`claude inspector: side bar switched to ${sessionId} (revealed=${p.revealed === true})`);
+    return p.revealed === true ? 'revealed' : 'activated';
+  } catch {
+    log('claude inspector: sidebar reveal returned unparseable payload');
+    return 'unavailable';
+  }
 }
 
 /** Debug: dump the Claude manager's own field shape as pretty JSON (or a diag). */

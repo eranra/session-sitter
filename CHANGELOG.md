@@ -5,6 +5,43 @@ single name — **Session Sitter** — and `ci/check-naming.sh` enforces that.
 
 ## Unreleased
 
+### Sessions on a VS Code remote window are visible again
+
+Cross-machine sessions worked from Bob and showed nothing from a plain VS Code, which made the
+feature look like it had regressed. It had not: two separate faults sat on the same path, and each
+one alone was enough to empty the list.
+
+The first was the address. Peers are discovered by mining `ssh-remote+<authority>` records out of
+the IDE's own `state.vscdb`, and `parseAuthority` accepted exactly one shape — `user@host`, which is
+what Bob writes. VS Code writes that shape only for a host named in `~/.ssh/config`; for a host
+given to it directly it hex-encodes a JSON connection record instead, so the authority of a live
+remote window reads
+
+    ssh-remote+7b22686f73744e616d65223a226f6c61...227d
+
+which decodes to `{"hostName":"olapevolve.vpc.cloud9.ibm.com","user":"vpcuser"}`. Mining had been
+finding those records all along; parsing then dropped every one of them for having no `@`, so a
+window the IDE was actively connected to contributed no peer at all. Both encodings are read now,
+and `extractAuthorities` normalises what it returns to `user@host` — the same machine is routinely
+recorded in both shapes in one db, and emitting them verbatim would have listed it, and probed it,
+twice. A record without a username is still rejected: guessing one is a speculative SSH connection,
+which is the traffic this discovery exists to avoid.
+
+The second fault was underneath, and would have kept the list empty even once a peer was found. A
+unix socket path is capped at 104 bytes on macOS, and ssh's `%C` token expands to a 40-character
+hash — under a macOS `os.tmpdir()`, which is `/var/folders/<x>/<random>/T`, the ControlMaster path
+built from the two blew past the cap. Every connection failed before it was attempted, with
+`ControlPath too long`, and the panel reported each peer unreachable forever. The digest is computed
+in `SshRunner` now, short and literal, where its length can be checked before ssh is asked to bind
+it; and if even that will not fit, the connection is made **without** multiplexing rather than not
+at all. Multiplexing is an optimisation, and an optimisation must never be the reason a feature
+reports nothing.
+
+Both faults were only reachable on a real setup — a macOS host with a remote window open — so the
+tests pin the exact artefacts that were found: the authority above, verbatim, and a socket path
+measured with no percent token left in it, because a length checked before ssh expands `%C` is not
+the length that reaches the kernel.
+
 ### Telegram stops renaming topics every few seconds
 
 A session's status is derived from its transcript, and an agent between tool calls leaves `working`

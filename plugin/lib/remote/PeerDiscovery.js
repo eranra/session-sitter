@@ -60,13 +60,55 @@ function stripWindowId(authority) {
     return authority.replace(/\.(-\d+|\d{5,})$/, '');
 }
 /**
+ * Read a hex-encoded JSON connection record, the form VS Code uses for a host given to it directly
+ * rather than named in `~/.ssh/config`.
+ *
+ * Every gate here exists to keep an ordinary hostname out of this branch, because a hostname can
+ * itself be valid hex — `deadbeef` is a legal label. So the bytes must be hex of even length, and
+ * must decode to something that is actually a JSON object carrying both fields. Anything less
+ * falls through to the `user@host` reading, where a bare host is rejected as it always was.
+ *
+ * A `port` in the record is deliberately ignored: `PeerAddress` is an ssh destination, and a
+ * non-default port belongs in the user's ssh config, which is where `SshRunner` will pick it up.
+ */
+function parseHexRecord(authority) {
+    if (authority.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(authority)) {
+        return null;
+    }
+    const text = Buffer.from(authority, 'hex').toString('utf8');
+    if (!text.startsWith('{')) {
+        return null;
+    }
+    let record;
+    try {
+        record = JSON.parse(text);
+    }
+    catch {
+        return null;
+    }
+    const host = typeof record.hostName === 'string' ? record.hostName.trim() : '';
+    const user = typeof record.user === 'string' ? record.user.trim() : '';
+    if (!host || !user) {
+        return null;
+    }
+    return { user, host, raw: `${user}@${host}` };
+}
+/**
  * Split an authority into its parts, or return null when it is not usable.
  *
- * A bare host is rejected on purpose. Without a username we would have to guess one, and every
- * wrong guess is a speculative SSH connection — exactly the traffic this feature must not create.
+ * Accepts both shapes an IDE writes: `user@host`, and the hex-encoded JSON record described above.
+ *
+ * A bare host is rejected on purpose, in either shape. Without a username we would have to guess
+ * one, and every wrong guess is a speculative SSH connection — exactly the traffic this feature
+ * must not create.
  */
 function parseAuthority(authority) {
     const parts = authority.split('@');
+    // No separator is the hex record's shape as well as a bare host's, so it is the only case worth
+    // decoding — and checking first keeps a real `user@host` on the cheap path.
+    if (parts.length === 1) {
+        return parseHexRecord(authority);
+    }
     if (parts.length !== 2) {
         return null;
     }
@@ -131,6 +173,10 @@ const AUTHORITY_RE = /ssh-remote(?:\+|%2B)([A-Za-z0-9_.%@-]*)/g;
 /**
  * Pull every distinct, usable peer authority out of raw ItemTable keys and values.
  *
+ * Normalised to `user@host` on the way out, whichever shape it was recorded in. That is what makes
+ * one machine one peer: the same host is routinely written both as a hex record and as plain
+ * `user@host` in the same db, and emitting them verbatim would probe it twice and list it twice.
+ *
  * Returned sorted so the peer list — and therefore the panel — is stable between passes.
  */
 function extractAuthorities(keys, values) {
@@ -157,17 +203,18 @@ function extractAuthorities(keys, values) {
     }
     // Belt and braces for stripWindowId: if a suffixed form somehow survives alongside its clean
     // form, keep only the clean one. Cheap, and it fails safe if the id heuristic ever misses.
-    const out = [];
+    const out = new Set();
     for (const auth of stripped) {
         const shadowed = [...stripped].some(other => other !== auth && auth.startsWith(other + '.') && /^-?\d+$/.test(auth.slice(other.length + 1)));
         if (shadowed) {
             continue;
         }
-        if (parseAuthority(auth)) {
-            out.push(auth);
+        const parsed = parseAuthority(auth);
+        if (parsed) {
+            out.add(parsed.raw);
         }
     }
-    return out.sort();
+    return [...out].sort();
 }
 /** Read the `key`/`value` columns of an IDE state db. */
 async function readItemTableViaSqlite(dbPath) {

@@ -394,8 +394,12 @@ It has two values because there is nothing to configure: the addresses are disco
 | `off` | No discovery, no polling, and no SSH connection of any kind. |
 
 Discovery reads the IDE's own state store. Every remote window you have ever opened leaves an
-`ssh-remote+<user@host>` record there, so the address used is the exact one the IDE itself connects
-with — the one most likely to work — and finding it costs no network traffic at all. This machine's
+`ssh-remote+<authority>` record there, so the address used is the exact one the IDE itself connects
+with — the one most likely to work — and finding it costs no network traffic at all. Two shapes of
+authority are read, because an IDE picks between them: plain `user@host`, and the hex-encoded JSON
+connection record (`{"hostName":…,"user":…}`) VS Code writes for a host given to it directly rather
+than named in `~/.ssh/config`. An authority carrying no username is ignored — guessing one would
+mean connecting somewhere on spec. This machine's
 own addresses are filtered out first: an IDE routinely records its own LAN address as a remote
 target, and a machine holds no authorized key for itself, so probing yourself would report your own
 machine as permanently unreachable.

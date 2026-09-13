@@ -67,6 +67,55 @@ describe('SshRunner argument construction', () => {
     expect(args.join(' ')).not.toContain('import os');
   });
 
+  it('keeps the control socket path inside the unix-socket limit', async () => {
+    // The bug this pins: macOS hands `os.tmpdir()` a long private path
+    // (/var/folders/<2>/<random>/T), and ssh's own `%C` expands to 40 hex characters. Together
+    // they exceeded the 104-byte sun_path limit, so EVERY peer failed with "ControlPath too long"
+    // and no remote session was ever listed on a Mac.
+    const macTmp = '/var/folders/bd/b6m1s4q12_3ddzypk9wbrc_40000gn/T/session-sitter-ssh-501';
+    const runner = new SshRunner({ exec: exec as never, now: () => 0, controlDir: macTmp });
+    await runner.run(peer, ['echo', 'hi']);
+    const args: string[] = exec.mock.calls[0][1];
+    const flag = args.find(a => a.startsWith('ControlPath='));
+    expect(flag).toBeDefined();
+    const socket = flag!.slice('ControlPath='.length);
+    // No ssh percent token, and this assertion is the reason: `%C` is expanded by ssh, not by us,
+    // so a path measured with the token still in it is not the path that gets bound. Measuring a
+    // literal is the only way this check can be true of what actually reaches the kernel.
+    expect(socket).not.toMatch(/%/);
+    // ssh appends `.<pid>` to this path while it sets the master up, so the budget is not the
+    // whole 104 bytes.
+    expect(socket.length).toBeLessThanOrEqual(92);
+  });
+
+  it('gives each peer its own socket, and the same peer the same one', async () => {
+    // What ssh's %C bought us, since we no longer use it: one multiplexed connection per peer.
+    const runner = runnerWith(exec);
+    await runner.run(peer, ['true']);
+    await runner.run(other, ['true']);
+    await runner.run(peer, ['true']);
+    const paths = exec.mock.calls.map(
+      (c: unknown[]) => (c[1] as string[]).find(a => a.startsWith('ControlPath=')));
+    expect(paths[0]).not.toBe(paths[1]);
+    expect(paths[0]).toBe(paths[2]);
+  });
+
+  it('drops multiplexing rather than failing when no short socket path exists', async () => {
+    // Degrade, never break: if the control directory is itself too long to hold a socket, the
+    // connection must still be made — just unmultiplexed. Returning an unusable ControlPath is
+    // what turned a slow poll into no sessions at all.
+    const tooLong = `/tmp/${'d'.repeat(120)}`;
+    const runner = new SshRunner({ exec: exec as never, now: () => 0, controlDir: tooLong });
+    await runner.run(peer, ['echo', 'hi']);
+    const args: string[] = exec.mock.calls[0][1];
+    expect(args.some(a => a.startsWith('ControlPath='))).toBe(false);
+    expect(args).not.toContain('ControlMaster=auto');
+    // The safety flags are not negotiable, whatever happens to multiplexing.
+    expect(args).toContain('BatchMode=yes');
+    const target = args.indexOf(peer.raw);
+    expect(args.slice(target + 1)).toEqual(['echo', 'hi']);
+  });
+
   it('honours a caller timeout', async () => {
     await runnerWith(exec).run(peer, ['true'], { timeoutMs: 1234 });
     expect(exec.mock.calls[0][2].timeout).toBe(1234);

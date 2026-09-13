@@ -38,6 +38,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SshRunner = exports.BACKOFF_CAP_MS = exports.BACKOFF_BASE_MS = void 0;
 const child_process_1 = require("child_process");
+const crypto_1 = require("crypto");
 const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
@@ -61,6 +62,17 @@ const path = __importStar(require("path"));
  * load on both ends and slow over a VPN, so connections are multiplexed: the first call sets up a
  * master socket and later calls reuse it.
  *
+ * ## Why the socket path is built here instead of with `%C`
+ *
+ * A unix socket path is capped at 104 bytes on macOS (108 on Linux), and ssh's `%C` token expands
+ * to a 40-character hash. Under a macOS `os.tmpdir()` — `/var/folders/<x>/<random>/T` — the two
+ * together blew past the cap, ssh refused every connection with `ControlPath too long`, and the
+ * panel reported each peer unreachable forever. So the peer's digest is computed here, short and
+ * literal, where its length can actually be checked before ssh is asked to bind it.
+ *
+ * And multiplexing is treated as what it is: an optimisation. If even the short path will not fit,
+ * the connection is made without it. Slower beats a feature that silently reports nothing.
+ *
  * ## Why anything substantial travels on stdin
  *
  * `ssh host cmd a b` does **not** preserve argv. ssh joins the words with spaces and hands the
@@ -79,6 +91,13 @@ exports.BACKOFF_CAP_MS = 15 * 60000;
 const CONNECT_TIMEOUT_S = 10;
 const CONTROL_PERSIST_S = 60;
 const DEFAULT_TIMEOUT_MS = 20000;
+/** `sun_path` is 104 bytes on macOS/BSD and 108 on Linux; the smaller one is the portable rule. */
+const MAX_SOCKET_PATH = 104;
+/**
+ * Room left below the cap, because the path we pass is not the longest one ssh binds: while
+ * bringing a master up it appends `.<pid>` and renames the result into place.
+ */
+const SOCKET_PATH_HEADROOM = 12;
 const realExec = (file, args, opts) => new Promise((resolve, reject) => {
     // spawn rather than execFile, because the probe script is delivered on stdin.
     const child = (0, child_process_1.spawn)(file, args, { stdio: ['pipe', 'pipe', 'pipe'] });
@@ -125,8 +144,9 @@ class SshRunner {
         this._failures = new Map();
         this._exec = opts.exec ?? realExec;
         this._now = opts.now ?? Date.now;
+        // Short on purpose — every character here is one fewer available to the socket name below.
         this._controlDir = opts.controlDir
-            ?? path.join(os.tmpdir(), `session-sitter-ssh-${process.getuid?.() ?? 0}`);
+            ?? path.join(os.tmpdir(), `ss-ssh-${process.getuid?.() ?? 0}`);
     }
     /**
      * Run one command on a peer and return its stdout.
@@ -142,7 +162,7 @@ class SshRunner {
         }
         this._ensureControlDir();
         try {
-            const { stdout } = await this._exec('ssh', [...this._sshOptions(), peer.raw, ...argv], { timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, stdin: opts.stdin });
+            const { stdout } = await this._exec('ssh', [...this._sshOptions(peer), peer.raw, ...argv], { timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS, maxBuffer: 32 * 1024 * 1024, stdin: opts.stdin });
             this._failures.delete(peer.raw);
             return stdout;
         }
@@ -171,16 +191,35 @@ class SshRunner {
     lastError(peer) {
         return this._failures.get(peer.raw)?.reason;
     }
-    _sshOptions() {
-        return [
+    _sshOptions(peer) {
+        const options = [
             // Never prompt. See the class comment: this is what keeps automatic discovery safe.
             '-o', 'BatchMode=yes',
             '-o', `ConnectTimeout=${CONNECT_TIMEOUT_S}`,
-            // %C is a hash of (host, port, user), so one socket per peer.
+        ];
+        const socket = this._controlPath(peer);
+        // Too long to bind means no multiplexing, not a failed connection. See the class comment.
+        if (socket.length + SOCKET_PATH_HEADROOM > MAX_SOCKET_PATH) {
+            return options;
+        }
+        return [
+            ...options,
             '-o', 'ControlMaster=auto',
-            '-o', `ControlPath=${path.join(this._controlDir, 'ss-%C')}`,
+            '-o', `ControlPath=${socket}`,
             '-o', `ControlPersist=${CONTROL_PERSIST_S}`,
         ];
+    }
+    /**
+     * Where this peer's multiplexing socket lives — one per peer, so a second peer never waits behind
+     * the first, and the same peer always reuses the warm connection.
+     *
+     * Keyed by `peer.raw`, which is how every other map in this class keys a peer, and truncated to
+     * 12 hex characters: this only has to separate the handful of peers one user's IDE has recorded,
+     * and each character costs budget against `MAX_SOCKET_PATH`.
+     */
+    _controlPath(peer) {
+        const digest = (0, crypto_1.createHash)('sha256').update(peer.raw).digest('hex').slice(0, 12);
+        return path.join(this._controlDir, `ss-${digest}`);
     }
     _ensureControlDir() {
         // 0o700: the control socket is a live authenticated channel to the peer.

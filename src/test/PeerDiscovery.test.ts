@@ -17,6 +17,14 @@ import {
 // genuinely dangerous step: an IPv4 authority also ends in `.<digits>`, so a naive strip turns
 // `eranra@192.168.50.16` into `eranra@192.168.50`.
 
+/** Encode a connection record the way VS Code's Remote - SSH encodes its authority. */
+const hex = (text: string): string => Buffer.from(text, 'utf8').toString('hex');
+
+/** Verbatim from a real state db: the authority of a VS Code window connected to olapevolve. */
+const HEX_OLAPEVOLVE =
+  '7b22686f73744e616d65223a226f6c617065766f6c76652e7670632e636c6f7564392e69626d2e636f6d22'
+  + '2c2275736572223a2276706375736572227d';
+
 describe('stripWindowId', () => {
   it('strips a long positive window id', () => {
     expect(stripWindowId('vpcuser@olapevolve.vpc.cloud9.ibm.com.76044865'))
@@ -65,6 +73,46 @@ describe('parseAuthority', () => {
     expect(parseAuthority('@host')).toBeNull();
     expect(parseAuthority('user@')).toBeNull();
     expect(parseAuthority('a@b@c')).toBeNull();
+  });
+
+  // VS Code's Remote - SSH does not write `user@host` for a host it was given directly: it
+  // hex-encodes a JSON connection record instead. Read off a real state db, the authority for
+  // olapevolve is HEX_OLAPEVOLVE below, which decodes to
+  // {"hostName":"olapevolve.vpc.cloud9.ibm.com","user":"vpcuser"}. Rejecting that form is what made
+  // every VS Code remote window invisible to the panel while Bob's plain form kept working.
+  it('decodes the hex-encoded JSON authority VS Code writes', () => {
+    expect(parseAuthority(HEX_OLAPEVOLVE)).toEqual({
+      user: 'vpcuser',
+      host: 'olapevolve.vpc.cloud9.ibm.com',
+      raw: 'vpcuser@olapevolve.vpc.cloud9.ibm.com',
+    });
+  });
+
+  it('decodes the hex form whatever order the JSON keys arrive in', () => {
+    expect(parseAuthority(hex('{"user":"vpcuser","port":22,"hostName":"olap.ibm.com"}'))?.raw)
+      .toBe('vpcuser@olap.ibm.com');
+  });
+
+  it('rejects a hex record with no user, same as a bare host', () => {
+    // Guessing a username is a speculative SSH connection, which is exactly the traffic this
+    // discovery must not create — so a record without one is no more usable than `host` alone.
+    expect(parseAuthority(hex('{"hostName":"olap.ibm.com"}'))).toBeNull();
+    expect(parseAuthority(hex('{"hostName":"olap.ibm.com","user":""}'))).toBeNull();
+  });
+
+  it('rejects hex that is not a connection record', () => {
+    expect(parseAuthority(hex('not json at all'))).toBeNull();
+    expect(parseAuthority(hex('{"hostName":"h","user":"u"'))).toBeNull(); // truncated JSON
+    expect(parseAuthority('7b2268')).toBeNull();                          // too short to be one
+    expect(parseAuthority('abcdef0123456789abcdef0123456789')).toBeNull(); // hex, but not JSON
+  });
+
+  it('still reads a plain hostname that happens to be all hex digits', () => {
+    // `deadbeef` is a legal hostname and an even-length hex string. Decoding wins only when the
+    // bytes really are a JSON record, so a host like this must not be swallowed by the hex branch
+    // — and with no user it is rejected for that reason, not misread as a record.
+    expect(parseAuthority('deadbeef')).toBeNull();
+    expect(parseAuthority('u@deadbeef')?.host).toBe('deadbeef');
   });
 });
 
@@ -126,6 +174,34 @@ describe('extractAuthorities', () => {
   it('survives junk input without throwing', () => {
     expect(extractAuthorities(['ssh-remote+'], ['ssh-remote%2B', 'ssh-remote+@'])).toEqual([]);
   });
+
+  // The two forms below are copied from a real VS Code state db, for one remote window on
+  // olapevolve: the key carries the host with no user, and the value carries the hex record that
+  // does have one. Mining found both before this fix and could use neither, so the panel showed
+  // nothing at all for a window the IDE was actively connected to.
+  it('mines the hex-encoded JSON form VS Code records for a remote window', () => {
+    const keys = [`ssh-remote+${'olapevolve.vpc.cloud9.ibm.com'}`];
+    const values = [`[18:51:12] Resolving ssh-remote+${HEX_OLAPEVOLVE} created and cached`];
+    expect(extractAuthorities(keys, values)).toEqual(['vpcuser@olapevolve.vpc.cloud9.ibm.com']);
+  });
+
+  it('mines the percent-encoded hex form from a folder URI', () => {
+    const values = [`vscode-remote://ssh-remote%2B${HEX_OLAPEVOLVE}/home/vpcuser/olap`];
+    expect(extractAuthorities([], values)).toEqual(['vpcuser@olapevolve.vpc.cloud9.ibm.com']);
+  });
+
+  it('dedupes a hex record against the plain form of the same peer', () => {
+    const values = [
+      `ssh-remote+${HEX_OLAPEVOLVE}`,
+      'ssh-remote+vpcuser@olapevolve.vpc.cloud9.ibm.com',
+    ];
+    expect(extractAuthorities([], values)).toEqual(['vpcuser@olapevolve.vpc.cloud9.ibm.com']);
+  });
+
+  it('strips a window id from a hex authority', () => {
+    const keys = [`remote.tunnels.toRestore.ssh-remote+${HEX_OLAPEVOLVE}.76044865`];
+    expect(extractAuthorities(keys, [])).toEqual(['vpcuser@olapevolve.vpc.cloud9.ibm.com']);
+  });
 });
 
 describe('discoverPeers', () => {
@@ -182,6 +258,24 @@ describe('discoverPeers', () => {
       isSelf: (p) => p.host === 'my-box',
     });
     expect(peers.map(p => p.raw)).toEqual(['vpcuser@olap.ibm.com']);
+  });
+
+  it('discovers a VS Code remote window, whose authority is a hex record', async () => {
+    // End to end over the exact rows a VS Code profile holds: no peer came out of this before,
+    // which is the whole bug — Bob wrote `user@host` and was found, VS Code writes hex and was not.
+    const peers = await discoverPeers({
+      ...notSelf,
+      findStateDbs: async () => ['/Users/u/Library/Application Support/Code/User/globalStorage/state.vscdb'],
+      readItemTable: async () => ({
+        keys: ['ssh-remote+olapevolve.vpc.cloud9.ibm.com'],
+        values: [`vscode-remote://ssh-remote%2B${HEX_OLAPEVOLVE}/home/vpcuser/olap`],
+      }),
+    });
+    expect(peers).toEqual([{
+      user: 'vpcuser',
+      host: 'olapevolve.vpc.cloud9.ibm.com',
+      raw: 'vpcuser@olapevolve.vpc.cloud9.ibm.com',
+    }]);
   });
 
   it('drops this machine by default, without being told to', async () => {

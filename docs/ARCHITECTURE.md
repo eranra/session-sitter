@@ -372,7 +372,7 @@ flowchart LR
     W2["a sibling window"]
     REGF[("~/.claude/session-sitter/windows/PID.json<br>WindowRegistry — open session ids,<br>workspace folders, ideCli, ipcSocket")]
     W1["this window<br>Session Sitter panel"]
-    PD["PeerDiscovery — mines ssh-remote+user@host<br>out of each IDE's globalStorage/state.vscdb,<br>with no SSH traffic at all"]
+    PD["PeerDiscovery — mines ssh-remote+authority<br>out of each IDE's globalStorage/state.vscdb,<br>with no SSH traffic at all"]
     SR["SshRunner — BatchMode, ControlMaster,<br>per-peer backoff"]
     CACHE[("a slower-refreshed cache,<br>never on _scanSessions' await path")]
     W2 --> REGF
@@ -404,7 +404,7 @@ the network.
 
 | Unit | Job |
 | --- | --- |
-| `remote/PeerDiscovery.ts` | find peers with **no** SSH traffic, by mining `ssh-remote+user@host` out of each IDE's `globalStorage/state.vscdb` |
+| `remote/PeerDiscovery.ts` | find peers with **no** SSH traffic, by mining `ssh-remote+<authority>` out of each IDE's `globalStorage/state.vscdb` — `user@host`, or the hex-encoded JSON record VS Code writes |
 | `remote/SshRunner.ts` | the one place SSH runs: `BatchMode`, `ControlMaster`, and the per-peer backoff |
 | `remote/remoteProbe.ts` | the python3 script a peer runs to report its live windows, Bob rows, and transcript bytes |
 | `remote/RemoteSessionSource.ts` | probe output to sessions, plus per-peer reachability and owner lookup |
@@ -414,6 +414,19 @@ the network.
 opened, which yields the exact `user@host` it connects with — for free, from a local file. The one
 subtle rule is stripping a trailing window id without corrupting an IPv4 authority, since both end
 in `.<digits>`; a window id is negative or long, an octet is not.
+
+**Why two authority shapes are parsed.** `user@host` is what Bob records, and assuming it was the
+only shape is what made this feature look absent in VS Code: for a host given to it directly, VS
+Code hex-encodes a JSON connection record instead — `{"hostName":…,"user":…}` — and every one of
+those was discarded for having no `@`. Both are read, and both normalise to `user@host`, because one
+db routinely holds the same machine in both shapes and it must still be one peer.
+
+**Why the control socket path is built, not `%C`.** A unix socket path is capped at 104 bytes on
+macOS and ssh's `%C` expands to 40 hex characters, which under a macOS `os.tmpdir()`
+(`/var/folders/<x>/<random>/T`) exceeded the cap — so ssh refused every connection with `ControlPath
+too long` and every peer read as unreachable. `SshRunner` computes a short digest itself, where the
+length can be checked before ssh binds it, and drops multiplexing entirely if it still will not fit.
+An optimisation must not be the reason the feature reports nothing.
 
 **Why the probe is python3 on stdin.** A peer has no guaranteed `node` and no checkout of this
 extension, and `python3` is already the SQLite dependency `BobDatabase.ts` relies on. It travels on

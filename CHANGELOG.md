@@ -5,6 +5,32 @@ single name — **Session Sitter** — and `ci/check-naming.sh` enforces that.
 
 ## Unreleased
 
+### A state dir that cannot be created no longer takes the whole extension down
+
+`sessionSitter.supervisorStateDir` was taken at its word. It reached `ensureDirs`, whose `mkdir`
+threw straight out of `activate()`, and one unwritable path killed everything the extension does —
+the panel, the Telegram remote interface and supervision alike. What made it expensive to diagnose
+is that the *only* trace was VS Code's own exthost log: this extension's file log lives inside the
+directory that could not be made, so it recorded nothing, and the Output channel held three lines
+written before the throw. From the outside the extension had simply stopped existing.
+
+The path that found it was a Linux `/home/eranra/...` state dir opened on macOS, where `/home` is an
+empty autofs mount that refuses `mkdir` outright — the shape of any setting carried between
+machines. A stale mount or a directory deleted since it was configured does the same thing.
+
+Resolving a state dir now ends at a directory that exists: `resolveStateDir` creates it, and a
+configured path it cannot create is reported in `unusable` and abandoned for the default under
+global storage. The fallback is deliberately **not** `explicit`, so it behaves in every respect like
+an unset setting — the AI supervisor stays off, and `resolveWorkspaceRoot` never treats the parent
+of a directory that does not exist as a repo. Activation then says, in the log, which path was
+refused and why, because falling back silently would leave a user's records somewhere they did not
+choose and cannot find.
+
+`ensureDirs` still throws for the CLI, where failing loudly is right. Its call in `activate()` is
+now best-effort: every writer already creates the directory it needs (`store.ts`, `messaging.ts`,
+`agentControl.ts`), so the up-front pass is a convenience, and nothing about it is worth losing the
+extension over.
+
 ### The audit reader's tests stop reading the developer's own state
 
 `src/test/cli/audit.test.ts` opens by declaring its own rule — fixtures rather than a real state dir,

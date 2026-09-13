@@ -89,7 +89,7 @@ describe('a deterministic rule decision is visible with NO configuration', () =>
 
   /** The extension's wiring, with `supervisorStateDir` deliberately unset. */
   function wire(notifyRuleDecisions = true) {
-    const state = resolveStateDir('', globalStorage);
+    const state = resolveStateDir('', globalStorage, dir => fs.mkdirSync(dir, { recursive: true }));
     const config = { stateDir: state.dir, notifyRuleDecisions } as unknown as SupervisorConfig;
     ensureDirs(config);
     const channel = new FakeChannel();

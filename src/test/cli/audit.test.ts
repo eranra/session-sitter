@@ -1,7 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+
+// `stateDirCandidates` looks in the VS Code global storage dir as well as the working directory,
+// and derives it from `os.homedir()` — the one input the `hermeticEnv` below cannot reach, because
+// no environment variable feeds it. On a machine that has actually run Session Sitter that
+// directory holds a trail, so the tests asserting "found nothing, anywhere" found the developer's
+// own state instead and failed. Pointing `homedir` at an empty temp tree closes the last hole in
+// this file's fixtures-only rule; `tmpdir` stays real, since the fixtures live under it.
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return { ...actual, homedir: vi.fn(() => actual.homedir()) };
+});
 import {
   AUDIT_FILE, DECISIONS_FILE, auditToDecision, filterDecisions, hookToDecision, isCorrection,
   isDenial, readAuditTrail, readDecisions, readFrom, readHookTrail, readSupervisionRecords,
@@ -94,14 +105,20 @@ const HOOK_CORRECTION: DecisionRecord = {
   note: '--force replaced with --force-with-lease',
 };
 
+/** An empty stand-in for the developer's home, so global storage is a place with nothing in it. */
+let homeDir: string;
+
 beforeEach(async () => {
   stateDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ss-audit-'));
   dataDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ss-data-'));
+  homeDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ss-home-'));
+  vi.mocked(os.homedir).mockReturnValue(homeDir);
 });
 
 afterEach(async () => {
   await fs.promises.rm(stateDir, { recursive: true, force: true });
   await fs.promises.rm(dataDir, { recursive: true, force: true });
+  await fs.promises.rm(homeDir, { recursive: true, force: true });
 });
 
 describe('auditToDecision', () => {

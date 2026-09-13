@@ -5,6 +5,30 @@ single name — **Session Sitter** — and `ci/check-naming.sh` enforces that.
 
 ## Unreleased
 
+### The audit reader's tests stop reading the developer's own state
+
+`src/test/cli/audit.test.ts` opens by declaring its own rule — fixtures rather than a real state dir,
+so that it "must pass on a machine that has never run the supervisor, and must not depend on what a
+machine that has happens to contain." Two of its tests broke that rule, and failed on any machine
+where Session Sitter had actually run.
+
+`resolveState` searches two candidates: one derived from the working directory, which the tests
+control, and the VS Code global storage dir, which they did not. `hermeticEnv` cannot reach the
+second, because it comes from `os.homedir()` and no environment variable feeds it. So the two tests
+asserting *found nothing, anywhere* found the developer's real trail and reported `populated: true`.
+CI never saw it: there is no global storage dir on a fresh runner, which is exactly why an
+environment-dependent test is worth fixing rather than tolerating.
+
+`os.homedir` is now stubbed to an empty temp tree, per test, alongside the existing `stateDir` and
+`dataDir` fixtures — `tmpdir` stays real, since the fixtures live under it. That closes the last
+input this file did not control, and it also fixes a third test that had been passing for the wrong
+reason: `readFrom` "falls back to the chosen directory" agreed with the expected answer only because
+both sides happened to be the developer's global storage path.
+
+No production code changed. Both repaired tests were checked against mutations of the code they
+cover — forcing `populated` true, and making `readFrom` name a directory that holds nothing — and
+each fails as it should.
+
 ### Clicking a side bar session focuses it, instead of duplicating it into the editor
 
 A session living in the secondary side bar was a click that opened a *second* copy of it as an

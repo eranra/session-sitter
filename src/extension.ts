@@ -318,11 +318,11 @@ export function activate(context: vscode.ExtensionContext) {
   //
   // `inspect()` rather than `get()` is load-bearing here. `get()` returns the manifest default for an
   // unset setting, so an env layer beneath it would be unreachable for every setting that has a
-  // default — which is all four of these.
+  // default — which is all of these.
   // Each key stays a *literal* in a `userValue` call. That is the form `ci/check-settings.mjs`
-  // recognises, so these four still count as read and cannot silently drift from their `package.json`
-  // declarations — passing `key` straight through would have been shorter and would have made all four
-  // look unread, which is the drift the guard exists to catch.
+  // recognises, so every one of them still counts as read and cannot silently drift from its
+  // `package.json` declaration — passing `key` straight through would have been shorter and would
+  // have made them all look unread, which is the drift the guard exists to catch.
   const explicitTelegram = {
     getBoolean: (key: string): boolean | undefined => {
       if (key === 'telegram.remoteControl') {
@@ -331,14 +331,29 @@ export function activate(context: vscode.ExtensionContext) {
       if (key === 'telegram.fullMessages') {
         return userValue<boolean>(cfg, 'telegram.fullMessages');
       }
+      if (key === 'telegram.mirrorToolActivity') {
+        return userValue<boolean>(cfg, 'telegram.mirrorToolActivity');
+      }
       return undefined;
     },
     getStringArray: (key: string): string[] | undefined => (key === 'telegram.allowedUserIds'
       ? userValue<string[]>(cfg, 'telegram.allowedUserIds')
       : undefined),
-    getNumber: (key: string): number | undefined => (key === 'telegram.maxMessageParts'
-      ? userValue<number>(cfg, 'telegram.maxMessageParts')
-      : undefined),
+    getNumber: (key: string): number | undefined => {
+      if (key === 'telegram.maxMessageParts') {
+        return userValue<number>(cfg, 'telegram.maxMessageParts');
+      }
+      if (key === 'telegram.maxTurnsPerPass') {
+        return userValue<number>(cfg, 'telegram.maxTurnsPerPass');
+      }
+      if (key === 'telegram.statusHoldSeconds') {
+        return userValue<number>(cfg, 'telegram.statusHoldSeconds');
+      }
+      if (key === 'telegram.toolActivitySeconds') {
+        return userValue<number>(cfg, 'telegram.toolActivitySeconds');
+      }
+      return undefined;
+    },
   };
   const remoteControlSettings: SettingsReader = layeredSettingsReader(explicitTelegram);
   const remoteControlConfig = remoteControlConfigFrom(remoteControlSettings, supervisorConfig);

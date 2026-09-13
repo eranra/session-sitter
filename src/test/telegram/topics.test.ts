@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  MANUAL_OPEN_GRACE_MS, TopicStore, parseTopic, topicsToDelete, type TopicRecord,
+  MANUAL_OPEN_GRACE_MS, STATUS_HOLD_MS_DEFAULT, TopicStore, parseTopic, shouldRenameTopic,
+  topicsToDelete, type TopicRecord,
 } from '../../telegram/topics';
 import { topicsDir } from '../../telegram/bus';
 
@@ -23,7 +24,9 @@ function record(over: Partial<TopicRecord> = {}): TopicRecord {
     sessionId: 's1',
     source: 'claude',
     name: '🟠 app / a title · claude',
+    nameSetAt: 500,
     mirroredTurns: 3,
+    lastPostedAt: 500,
     closed: false,
     openedAt: 500,
     createdAt: 500,
@@ -206,5 +209,62 @@ describe('TopicStore: damaged records', () => {
     const store = new TopicStore(home);
     await store.save(record({ threadId: 33 }));
     expect(await store.damagedThreadIds()).toEqual([]);
+  });
+});
+
+// A status is derived from a transcript, and an agent between tool calls leaves `working` and comes
+// back to it seconds later. Every one of those wrote a rename, so one busy session filled the group
+// with "Name changed" notices and drowned out the sessions that actually needed somebody.
+describe('shouldRenameTopic', () => {
+  const named = (over: Partial<TopicRecord> = {}) =>
+    record({ name: '🔄 app / a title · claude', nameSetAt: 1_000_000, ...over });
+  const WORKING = named().name;
+  const SEEN = '⚫ app / a title · claude';
+
+  it('does nothing when the name already says what it should', () => {
+    expect(shouldRenameTopic(named(), WORKING, 'working', 1_000_000, STATUS_HOLD_MS_DEFAULT))
+      .toBe(false);
+  });
+
+  it('holds a change that lands inside the window', () => {
+    expect(shouldRenameTopic(named(), SEEN, 'seen', 1_030_000, STATUS_HOLD_MS_DEFAULT)).toBe(false);
+  });
+
+  it('writes the change once the window is up', () => {
+    expect(shouldRenameTopic(named(), SEEN, 'seen', 1_060_000, STATUS_HOLD_MS_DEFAULT)).toBe(true);
+  });
+
+  it('never renames at all when the status flaps back inside the window', () => {
+    // working → seen → working. The first is held; by the time the hold is up the wanted name is
+    // the one already on the topic, so nothing is ever written. This is the point of the setting.
+    expect(shouldRenameTopic(named(), SEEN, 'seen', 1_020_000, STATUS_HOLD_MS_DEFAULT)).toBe(false);
+    expect(shouldRenameTopic(named(), WORKING, 'working', 1_090_000, STATUS_HOLD_MS_DEFAULT))
+      .toBe(false);
+  });
+
+  it('never holds a status that needs you', () => {
+    // The topic list is worth reading because of these two. Showing an approval a minute late would
+    // trade a real cost for a cosmetic one.
+    for (const status of ['approval', 'question'] as const) {
+      expect(shouldRenameTopic(named(), '🟠 x', status, 1_000_001, STATUS_HOLD_MS_DEFAULT), status)
+        .toBe(true);
+    }
+  });
+
+  it('never holds a fault', () => {
+    expect(shouldRenameTopic(named(), '🔴 x', 'stalled', 1_000_001, STATUS_HOLD_MS_DEFAULT))
+      .toBe(true);
+  });
+
+  it('writes every change when the hold is turned off', () => {
+    expect(shouldRenameTopic(named(), SEEN, 'seen', 1_000_001, 0)).toBe(true);
+  });
+
+  it('writes the first change after an upgrade, rather than holding an unknown age', () => {
+    // A record from a build before the hold existed has no `nameSetAt`, so it parses as 0.
+    const upgraded = parseTopic(JSON.stringify({ ...named(), nameSetAt: undefined }));
+    expect(upgraded?.nameSetAt).toBe(0);
+    expect(shouldRenameTopic(upgraded!, SEEN, 'seen', 1_000_001, STATUS_HOLD_MS_DEFAULT))
+      .toBe(true);
   });
 });

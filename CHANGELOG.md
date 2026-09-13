@@ -5,6 +5,71 @@ single name — **Session Sitter** — and `ci/check-naming.sh` enforces that.
 
 ## Unreleased
 
+### Telegram stops renaming topics every few seconds
+
+A session's status is derived from its transcript, and an agent between tool calls leaves `working`
+and comes back to it seconds later. Every one of those wrote a rename, Telegram announces a rename
+inside the thread, and so one busy session produced a *Name changed* notice every few seconds —
+drowning out the sessions that actually needed somebody, which is the whole reason the topic list
+leads with a status icon.
+
+A topic now keeps the name it has for `sessionSitter.telegram.statusHoldSeconds` (default 60) before a
+status change is written. `shouldRenameTopic` is a cooldown on **writing**, not a wait for the status
+to settle, and the distinction is the design: waiting for a status to hold steady would delay every
+rename by the hold, including the one you are waiting for. A cooldown delays only a rename that
+follows hard on the heels of another — exactly the flap — so `working → seen → working` inside the
+window is never renamed at all, because by the time the window is up the wanted name is the one
+already on the topic.
+
+`approval`, `question` and `stalled` are never held. They are why the topic list is worth reading;
+showing one up to a minute late would trade a real cost for a cosmetic one. `0` restores the old
+behaviour, and a record written by an earlier build parses with `nameSetAt: 0`, so the first real
+change after an upgrade is written rather than held back by a timestamp nobody took.
+
+### A busy session's topic stopped reporting anything, permanently
+
+The mirror tracked how far it had got as a **count** of turns, and compared it against
+`getRecentExchanges`, which returns a sliding window of the last six turns rather than the whole
+transcript. So on a session that had produced six turns, `turns.length` stopped growing while the
+cursor stayed equal to it: `turns.length <= cursor` was true on every later pass, and the topic went
+silent for the rest of the session while the session itself carried on talking. Every session long
+enough to be worth reading from a phone hit this, which is why "most of the messages are not reported"
+was the shape of the complaint.
+
+The cursor is now the **identity** of the last turn posted (`turnKey` — timestamp, speaker, kind and
+the shape of the text), which survives a window that slides where a count cannot. Where the anchor has
+fallen out of the window entirely, its timestamp still orders it against the turns that are in the
+window, so those are recovered rather than lost; where nothing can be compared at all the answer is
+"nothing new", because skipping a line costs less than reposting a conversation. `mirroredTurns` stays
+in the record as the count, and a record written before keys existed resumes from it once and then has
+one.
+
+Two things make the topic say more, now that it can:
+
+- **Every spoken turn is posted.** `MAX_TURNS_PER_PASS` was 4, so a pass that saw five turns dropped
+  one — and since a pass runs every few seconds, five turns in one pass means the session is *talking*.
+  The budget is now `sessionSitter.telegram.maxTurnsPerPass` (default 12), a backstop against
+  Telegram's rate limit rather than a filter, and the overflow is still named rather than dropped.
+- **Tool activity is sampled.** An agent that spends ten minutes editing files says nothing in that
+  time, so the topic showed nothing at all and read as a session that had stopped — while the panel,
+  which shows a tool name beside the row, said otherwise about the same session. `getRecentExchanges`
+  can now return those records as `kind: 'tool'` turns (`Edit(src/render.ts)`, first line of a command
+  only), and `planMirror` posts one line for them at most once per quiet window:
+  `🛠 Edit(src/telegram/render.ts) · +6 more tool calls`.
+
+The window is `sessionSitter.telegram.toolActivitySeconds` (default 60) and it is measured from
+anything posted into the topic, a mirrored turn included: a turn already says the session is alive,
+which is the only thing a sample is for. So a talkative session shows no tool lines and a quiet one
+shows about one a minute — which is what makes this affordable inside Telegram's ~20-messages-a-minute
+allowance for the whole group. A sample the window withholds is dropped rather than queued, because
+posting it a minute late would report a finished call as though it were current.
+`sessionSitter.telegram.mirrorToolActivity: false` turns the lines off entirely.
+
+The mirror also reads 60 turns of transcript per pass instead of 6. The depth is load-bearing rather
+than generous: tool activity spends that budget too, and a window barely larger than one pass would be
+recovering its anchor by timestamp constantly.
+
+
 ### A state dir that cannot be created no longer takes the whole extension down
 
 `sessionSitter.supervisorStateDir` was taken at its word. It reached `ensureDirs`, whose `mkdir`

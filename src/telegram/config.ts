@@ -1,7 +1,7 @@
 /**
  * Settings for the Telegram remote-control feature.
  *
- * Only two settings are new. The bot token and chat id are reused from the supervision settings
+ * The bot token and chat id are not among them: they are reused from the supervision settings
  * (`sessionSitter.supervisor.telegram*`), because remote control and supervision belong in the
  * *same* group — a decision card for a session and the conversation with that session should not
  * live in two different places.
@@ -19,7 +19,10 @@
  * a synced-token mistake is at least visible in the log.
  */
 
-import { MAX_MESSAGE_PARTS_DEFAULT, MAX_MESSAGE_PARTS_LIMIT } from './render';
+import {
+  MAX_MESSAGE_PARTS_DEFAULT, MAX_MESSAGE_PARTS_LIMIT, MAX_TURNS_PER_PASS_DEFAULT,
+  MAX_TURNS_PER_PASS_LIMIT, STATUS_HOLD_SECONDS_DEFAULT, TOOL_SAMPLE_SECONDS_DEFAULT,
+} from './render';
 import type { SupervisorConfig } from '../supervisor/config';
 
 export interface RemoteControlConfig {
@@ -34,6 +37,17 @@ export interface RemoteControlConfig {
   fullMessages: boolean;
   /** Messages one turn may be split into. Clamped to 1..`MAX_MESSAGE_PARTS_LIMIT`. */
   maxMessageParts: number;
+  /**
+   * Seconds a topic name is held at what it last said before a status change is written. 0 writes
+   * every change, which is what the feature did before the setting existed.
+   */
+  statusHoldSeconds: number;
+  /** Post sampled tool activity into a topic at all, so a working session is visibly working. */
+  mirrorToolActivity: boolean;
+  /** Seconds a topic must have been quiet before one line of tool activity is sampled into it. */
+  toolActivitySeconds: number;
+  /** Spoken turns one pass may post before the overflow collapses into a line. */
+  maxTurnsPerPass: number;
 }
 
 /** What a settings reader has to provide. Keeps this module free of the `vscode` module. */
@@ -65,7 +79,37 @@ export function remoteControlConfigFrom(
     fullMessages: settings.getBoolean('telegram.fullMessages', true),
     maxMessageParts: clampParts(
       settings.getNumber('telegram.maxMessageParts', MAX_MESSAGE_PARTS_DEFAULT)),
+    statusHoldSeconds: clampSeconds(
+      settings.getNumber('telegram.statusHoldSeconds', STATUS_HOLD_SECONDS_DEFAULT),
+      STATUS_HOLD_SECONDS_DEFAULT),
+    mirrorToolActivity: settings.getBoolean('telegram.mirrorToolActivity', true),
+    toolActivitySeconds: clampSeconds(
+      settings.getNumber('telegram.toolActivitySeconds', TOOL_SAMPLE_SECONDS_DEFAULT),
+      TOOL_SAMPLE_SECONDS_DEFAULT),
+    maxTurnsPerPass: clampTurns(
+      settings.getNumber('telegram.maxTurnsPerPass', MAX_TURNS_PER_PASS_DEFAULT)),
   };
+}
+
+/** An hour's ceiling on the two second-valued settings, and 0 kept as "no delay at all". */
+const MAX_INTERVAL_SECONDS = 3600;
+
+/**
+ * A whole number of seconds, 0..an hour.
+ *
+ * Zero is meaningful for both of these — it turns the hold off and the sampling into "every pass" —
+ * so it is kept rather than floored to a minimum. A negative or non-numeric value is a hand-edited
+ * `settings.json`, and falls back to the default rather than becoming a window that never closes.
+ */
+function clampSeconds(value: number, fallback: number): number {
+  if (!Number.isFinite(value) || value < 0) { return fallback; }
+  return Math.min(MAX_INTERVAL_SECONDS, Math.floor(value));
+}
+
+/** The per-pass turn budget, held inside what one topic may spend of the group's minute. */
+function clampTurns(value: number): number {
+  if (!Number.isFinite(value)) { return MAX_TURNS_PER_PASS_DEFAULT; }
+  return Math.min(MAX_TURNS_PER_PASS_LIMIT, Math.max(1, Math.floor(value)));
 }
 
 /**
@@ -92,6 +136,16 @@ function clampParts(value: number): number {
  */
 export function effectiveMessageParts(config: RemoteControlConfig): number {
   return config.fullMessages ? config.maxMessageParts : 1;
+}
+
+/** The rename hold in milliseconds, which is what `shouldRenameTopic` compares against. */
+export function statusHoldMs(config: RemoteControlConfig): number {
+  return config.statusHoldSeconds * 1000;
+}
+
+/** The tool-sample quiet window in milliseconds, which is what `planMirror` compares against. */
+export function toolSampleMs(config: RemoteControlConfig): number {
+  return config.toolActivitySeconds * 1000;
 }
 
 /**

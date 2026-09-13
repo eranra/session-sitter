@@ -80,6 +80,10 @@ group has always worked this way; these are the ones that did not, and now do:
 | `SESSION_SITTER_TELEGRAM_ALLOWED_USER_IDS` | `sessionSitter.telegram.allowedUserIds` | comma- or space-separated ids. **Empty authorises nobody** |
 | `SESSION_SITTER_TELEGRAM_FULL_MESSAGES` | `sessionSitter.telegram.fullMessages` | `on`/`off` |
 | `SESSION_SITTER_TELEGRAM_MAX_MESSAGE_PARTS` | `sessionSitter.telegram.maxMessageParts` | 1–20 |
+| `SESSION_SITTER_TELEGRAM_MAX_TURNS_PER_PASS` | `sessionSitter.telegram.maxTurnsPerPass` | 1–50 spoken turns per pass |
+| `SESSION_SITTER_TELEGRAM_STATUS_HOLD_SECONDS` | `sessionSitter.telegram.statusHoldSeconds` | 0–3600. `0` renames on every status change |
+| `SESSION_SITTER_TELEGRAM_MIRROR_TOOL_ACTIVITY` | `sessionSitter.telegram.mirrorToolActivity` | `on`/`off` |
+| `SESSION_SITTER_TELEGRAM_TOOL_ACTIVITY_SECONDS` | `sessionSitter.telegram.toolActivitySeconds` | 0–3600 |
 
 The knowledge triple and the paths were already reachable, and are listed for completeness:
 `SESSION_SITTER_USER`, `SESSION_SITTER_PROJECT`, `SESSION_SITTER_TEAM`,
@@ -221,6 +225,10 @@ warning is logged — supervision degrades rather than failing silently.
 | `sessionSitter.telegram.allowedUserIds` | `[]` | Telegram **user ids** permitted to drive it. **Empty authorises nobody.** Rejected ids are logged so you can copy them in. |
 | `sessionSitter.telegram.fullMessages` | `true` | Mirror each turn **whole**, split over as many messages as it needs. Off falls back to the panel's ~250-character preview. |
 | `sessionSitter.telegram.maxMessageParts` | `4` | Messages one turn may be split into, 1–20. Past the budget the last message says how many characters were left out and points at **📄 Full transcript**. |
+| `sessionSitter.telegram.maxTurnsPerPass` | `12` | Spoken turns one pass may post before the overflow collapses into one line. A rate-limit backstop, not a policy — every user and agent message is meant to reach the group. |
+| `sessionSitter.telegram.statusHoldSeconds` | `60` | How long a topic keeps the name it has before a status change is written. Stops the rename churn of an agent moving in and out of `working`. `approval`, `question` and `stalled` are never held; `0` writes every change. |
+| `sessionSitter.telegram.mirrorToolActivity` | `true` | Post an occasional `🛠 Edit(src/render.ts)` line, so a session that is working but not talking is visibly working. |
+| `sessionSitter.telegram.toolActivitySeconds` | `60` | How long a topic must have been quiet — anything posted counts — before one tool line is sampled into it. |
 
 The bot token and chat id are **reused** from `sessionSitter.supervisor.telegramBotToken` /
 `.telegramChatId` (and their `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` fallbacks), so supervision

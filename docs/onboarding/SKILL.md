@@ -229,7 +229,7 @@ else the first workspace folder. Not the home directory.
 - *what does the **extension** read when this setting is blank* — that is what `check` resolves, and
   what a `settings.json` review is asking
 - *how does a **terminal** configure this setting* — the daemon, the CLI and the hooks, which have an
-  answer for all 38 settings: an environment variable, a flag, or nothing needed because the setting
+  answer for all 42 settings: an environment variable, a flag, or nothing needed because the setting
   configures an IDE surface a terminal does not have
 
 The clearest divergence, and worth saying to anyone who mentions it: **the extension does not read

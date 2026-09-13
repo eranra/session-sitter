@@ -22,12 +22,16 @@
   // does not start. To find your id: turn this on with the list empty, send any message in the
   // group, and read the "Session Sitter" Output panel — every rejected sender's id is logged.
   //
-  // All four telegram.* settings fall back to an environment variable when unset, which is how
+  // Every telegram.* setting falls back to an environment variable when unset, which is how
   // `session-sitter daemon` is configured on a machine with no IDE:
   //   SESSION_SITTER_TELEGRAM_REMOTE_CONTROL=1
   //   SESSION_SITTER_TELEGRAM_ALLOWED_USER_IDS="123456789, 987654321"   # commas or whitespace
   //   SESSION_SITTER_TELEGRAM_FULL_MESSAGES=1
   //   SESSION_SITTER_TELEGRAM_MAX_MESSAGE_PARTS=4
+  //   SESSION_SITTER_TELEGRAM_MAX_TURNS_PER_PASS=12
+  //   SESSION_SITTER_TELEGRAM_STATUS_HOLD_SECONDS=60
+  //   SESSION_SITTER_TELEGRAM_MIRROR_TOOL_ACTIVITY=1
+  //   SESSION_SITTER_TELEGRAM_TOOL_ACTIVITY_SECONDS=60
   "sessionSitter.telegram.allowedUserIds": ["123456789"],
 
   // Mirror each turn WHOLE, split over as many messages as it needs. Off falls back to the panel's
@@ -39,6 +43,22 @@
   // rate limit — about 20 messages a minute to one group — so 4 is a deliberate default, not a
   // timid one.
   "sessionSitter.telegram.maxMessageParts": 4,
+
+  // Spoken turns one mirror pass may post before the overflow collapses into one line. Every user
+  // message and every agent message that is not a tool call is meant to reach the group, so this is
+  // a backstop against Telegram's rate limit rather than a filter.
+  "sessionSitter.telegram.maxTurnsPerPass": 12,
+
+  // How long a topic keeps the name it has before a status change is written. A session's status
+  // comes from its transcript, and an agent between tool calls leaves "working" and returns to it
+  // seconds later — each of those was a rename, and a busy session filled the group with
+  // "Name changed" notices. Held for a minute; approval, question and stalled are never held.
+  "sessionSitter.telegram.statusHoldSeconds": 60,
+
+  // An occasional "Edit(src/render.ts)" line, so a session that is working but not talking is
+  // visibly working — sampled at most once per quiet window, never streamed.
+  "sessionSitter.telegram.mirrorToolActivity": true,
+  "sessionSitter.telegram.toolActivitySeconds": 60,
 
   // The group id is shared with supervision, so cards and conversations land in the same group.
   // Negative because it is a group; a supergroup id starts with -100.

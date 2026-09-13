@@ -461,6 +461,74 @@ describe('SessionManager.getRecentExchanges', () => {
     expect(result[1]).toMatchObject({ role: 'assistant', text: 'All done.' });
   });
 
+  // The Telegram mirror is the caller that wants these. A session that spends ten minutes editing
+  // files says nothing in that time, and a topic showing nothing reads as a session that has stopped.
+  it('returns tool-only assistant records as tool turns when asked for them', async () => {
+    const id = 'preview-tool-turns';
+    const file = await writeTempJsonl(tmpDir, id, [
+      { type: 'user', message: { content: 'Fix the sort' } },
+      { type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: '/w/app/src/sort.ts' } },
+      ] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Fixed.' }] } },
+    ]);
+    seedPath(id, file);
+    const result = await sm.getRecentExchanges(id, { includeTools: true });
+    expect(result).toHaveLength(3);
+    expect(result[1]).toMatchObject({
+      role: 'assistant', kind: 'tool', text: 'Edit(/w/app/src/sort.ts)',
+    });
+    // The spoken turns are untouched — the kind is what tells the mirror to sample rather than post.
+    expect(result[2].kind).toBeUndefined();
+  });
+
+  it('names every tool of a batched record, so a parallel call is not understated', async () => {
+    const id = 'preview-tool-batch';
+    const file = await writeTempJsonl(tmpDir, id, [
+      { type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'a.ts' } },
+        { type: 'tool_use', id: 't2', name: 'Bash', input: { command: 'make check\nmake guards' } },
+      ] } },
+    ]);
+    seedPath(id, file);
+    const result = await sm.getRecentExchanges(id, { includeTools: true });
+    // First line of the command only: a heredoc would otherwise become the flood sampling avoids.
+    expect(result[0].text).toBe('Read(a.ts), Bash(make check)');
+  });
+
+  it('leaves tool records out unless they are asked for', async () => {
+    const id = 'preview-tool-turns-off';
+    const file = await writeTempJsonl(tmpDir, id, [
+      { type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: 'a.ts' } },
+      ] } },
+    ]);
+    seedPath(id, file);
+    expect(await sm.getRecentExchanges(id)).toEqual([]);
+  });
+
+  // The mirror resumes from the last turn it posted, so a window barely deeper than one pass makes
+  // it recover by timestamp constantly — and a window it cannot see past loses turns outright.
+  it('returns as many turns as the caller asks for', async () => {
+    const id = 'preview-limit';
+    const lines = Array.from({ length: 40 }, (_, i) => (
+      { type: 'user', message: { content: `Question ${i}` } }));
+    const file = await writeTempJsonl(tmpDir, id, lines);
+    seedPath(id, file);
+    expect(await sm.getRecentExchanges(id, { limit: 30 })).toHaveLength(30);
+    expect(await sm.getRecentExchanges(id)).toHaveLength(6);
+  });
+
+  it('falls back to the default depth for a limit that is not a usable number', async () => {
+    const id = 'preview-limit-bad';
+    const lines = Array.from({ length: 10 }, (_, i) => (
+      { type: 'user', message: { content: `Question ${i}` } }));
+    const file = await writeTempJsonl(tmpDir, id, lines);
+    seedPath(id, file);
+    expect(await sm.getRecentExchanges(id, { limit: 0 })).toHaveLength(1);
+    expect(await sm.getRecentExchanges(id, { limit: NaN })).toHaveLength(6);
+  });
+
   it('truncates user text longer than 150 chars', async () => {
     const id = 'preview-trunc-user';
     const longText = 'U'.repeat(200);

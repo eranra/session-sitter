@@ -53,7 +53,7 @@ the extension is running.
 |---|---|
 | [`SKILL.md`](SKILL.md) | the skill itself: the interview, in six layers, and the rules for writing settings |
 | [`examples/`](examples/) | seven complete configurations, one per layer, commented and CI-validated |
-| [`reference/SETTINGS.md`](reference/SETTINGS.md) | all 38 settings: type, default, range, scope, and the question to ask about each |
+| [`reference/SETTINGS.md`](reference/SETTINGS.md) | all 42 settings: type, default, range, scope, and the question to ask about each |
 | [`reference/AUTO-RESPOND.md`](reference/AUTO-RESPOND.md) | the auto-approve rule format, worked rules, and the six ways a rule silently never fires |
 | [`reference/TELEGRAM-SETUP.md`](reference/TELEGRAM-SETUP.md) | the Telegram side, ordered so nothing is done twice |
 | [`reference/ENVIRONMENT.md`](reference/ENVIRONMENT.md) | every variable, what it falls back for, and the ones with no setting behind them |

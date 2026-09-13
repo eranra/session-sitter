@@ -3,10 +3,15 @@ import {
   effectiveMessageParts,
   remoteControlConfigFrom,
   startupBlocker,
+  statusHoldMs,
+  toolSampleMs,
   type RemoteControlConfig,
   type SettingsReader,
 } from '../../telegram/config';
-import { MAX_MESSAGE_PARTS_DEFAULT, MAX_MESSAGE_PARTS_LIMIT } from '../../telegram/render';
+import {
+  MAX_MESSAGE_PARTS_DEFAULT, MAX_MESSAGE_PARTS_LIMIT, MAX_TURNS_PER_PASS_DEFAULT,
+  MAX_TURNS_PER_PASS_LIMIT, STATUS_HOLD_SECONDS_DEFAULT, TOOL_SAMPLE_SECONDS_DEFAULT,
+} from '../../telegram/render';
 import type { SupervisorConfig } from '../../supervisor/config';
 
 function settings(values: Record<string, unknown> = {}): SettingsReader {
@@ -33,6 +38,10 @@ function config(over: Partial<RemoteControlConfig> = {}): RemoteControlConfig {
     allowedUserIds: ['42'],
     fullMessages: true,
     maxMessageParts: MAX_MESSAGE_PARTS_DEFAULT,
+    statusHoldSeconds: STATUS_HOLD_SECONDS_DEFAULT,
+    mirrorToolActivity: true,
+    toolActivitySeconds: TOOL_SAMPLE_SECONDS_DEFAULT,
+    maxTurnsPerPass: MAX_TURNS_PER_PASS_DEFAULT,
     ...over,
   };
 }
@@ -151,5 +160,62 @@ describe('remoteControlConfigFrom message parts', () => {
       settings({ 'telegram.fullMessages': false, 'telegram.maxMessageParts': 8 }), supervisor());
     expect(effectiveMessageParts(cfg)).toBe(1);
     expect(effectiveMessageParts(config({ fullMessages: true, maxMessageParts: 8 }))).toBe(8);
+  });
+});
+
+describe('the mirror settings', () => {
+  it('holds a topic name for a minute by default, in milliseconds', () => {
+    const cfg = remoteControlConfigFrom(settings(), supervisor());
+    expect(cfg.statusHoldSeconds).toBe(STATUS_HOLD_SECONDS_DEFAULT);
+    expect(statusHoldMs(cfg)).toBe(60_000);
+  });
+
+  it('samples tool activity once a minute by default', () => {
+    const cfg = remoteControlConfigFrom(settings(), supervisor());
+    expect(cfg.mirrorToolActivity).toBe(true);
+    expect(cfg.toolActivitySeconds).toBe(TOOL_SAMPLE_SECONDS_DEFAULT);
+    expect(toolSampleMs(cfg)).toBe(60_000);
+  });
+
+  it('keeps a zero, because zero means "no delay" for both of them', () => {
+    const cfg = remoteControlConfigFrom(
+      settings({ 'telegram.statusHoldSeconds': 0, 'telegram.toolActivitySeconds': 0 }),
+      supervisor());
+    expect(cfg.statusHoldSeconds).toBe(0);
+    expect(cfg.toolActivitySeconds).toBe(0);
+  });
+
+  it('falls back rather than accepting a negative or non-numeric window', () => {
+    // A window that never closes would silence a topic for good, which is worse than the default.
+    for (const bad of [-30, 'soon']) {
+      expect(remoteControlConfigFrom(
+        settings({ 'telegram.statusHoldSeconds': bad }), supervisor()).statusHoldSeconds)
+        .toBe(STATUS_HOLD_SECONDS_DEFAULT);
+    }
+  });
+
+  it('caps a window at an hour', () => {
+    expect(remoteControlConfigFrom(
+      settings({ 'telegram.toolActivitySeconds': 99_999 }), supervisor()).toolActivitySeconds)
+      .toBe(3600);
+  });
+
+  it('takes the per-pass turn budget from settings, clamped', () => {
+    expect(remoteControlConfigFrom(
+      settings({ 'telegram.maxTurnsPerPass': 20 }), supervisor()).maxTurnsPerPass).toBe(20);
+    expect(remoteControlConfigFrom(
+      settings({ 'telegram.maxTurnsPerPass': 5_000 }), supervisor()).maxTurnsPerPass)
+      .toBe(MAX_TURNS_PER_PASS_LIMIT);
+    expect(remoteControlConfigFrom(
+      settings({ 'telegram.maxTurnsPerPass': 0 }), supervisor()).maxTurnsPerPass).toBe(1);
+    expect(remoteControlConfigFrom(
+      settings({ 'telegram.maxTurnsPerPass': 'many' }), supervisor()).maxTurnsPerPass)
+      .toBe(MAX_TURNS_PER_PASS_DEFAULT);
+  });
+
+  it('can be told not to mirror tool activity at all', () => {
+    expect(remoteControlConfigFrom(
+      settings({ 'telegram.mirrorToolActivity': false }), supervisor()).mirrorToolActivity)
+      .toBe(false);
   });
 });

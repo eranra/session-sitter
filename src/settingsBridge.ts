@@ -4,7 +4,7 @@
  * ## Why a table rather than a convention
  *
  * The supervisor group already layers settings over the environment (`src/supervisorSettings.ts`), so
- * a headless run configures 19 of the 38 settings. The rest had no headless story at all, and no way
+ * a headless run configures 19 of the 42 settings. The rest had no headless story at all, and no way
  * to notice: a setting the extension reads and a terminal cannot is invisible until someone on a build
  * box asks why their configuration does nothing.
  *
@@ -96,8 +96,10 @@ export const HEADLESS_EQUIVALENT: Readonly<Record<string, HeadlessEquivalent>> =
   'sessionSitter.dataRepoPath': { kind: 'env', name: 'KNOWLEDGE_LOCAL_REPO' },
 
   // ── The Telegram remote interface ────────────────────────────────────────
-  // These four had no headless equivalent at all, which is what this table was written to surface:
-  // the daemon can hold the reader lease and mirror sessions, and until now it could not be told to.
+  // The first four had no headless equivalent at all, which is what this table was written to
+  // surface: the daemon can hold the reader lease and mirror sessions, and until now it could not be
+  // told to. The four that follow shape how much the mirror says, and they belong here for the same
+  // reason — a machine with no IDE window is exactly where a flapping topic name goes unnoticed.
   'sessionSitter.telegram.remoteControl': {
     kind: 'env', name: 'SESSION_SITTER_TELEGRAM_REMOTE_CONTROL',
   },
@@ -109,6 +111,18 @@ export const HEADLESS_EQUIVALENT: Readonly<Record<string, HeadlessEquivalent>> =
   },
   'sessionSitter.telegram.maxMessageParts': {
     kind: 'env', name: 'SESSION_SITTER_TELEGRAM_MAX_MESSAGE_PARTS',
+  },
+  'sessionSitter.telegram.maxTurnsPerPass': {
+    kind: 'env', name: 'SESSION_SITTER_TELEGRAM_MAX_TURNS_PER_PASS',
+  },
+  'sessionSitter.telegram.statusHoldSeconds': {
+    kind: 'env', name: 'SESSION_SITTER_TELEGRAM_STATUS_HOLD_SECONDS',
+  },
+  'sessionSitter.telegram.mirrorToolActivity': {
+    kind: 'env', name: 'SESSION_SITTER_TELEGRAM_MIRROR_TOOL_ACTIVITY',
+  },
+  'sessionSitter.telegram.toolActivitySeconds': {
+    kind: 'env', name: 'SESSION_SITTER_TELEGRAM_TOOL_ACTIVITY_SECONDS',
   },
 
   // ── Consent, better expressed as a flag ──────────────────────────────────

@@ -55,6 +55,16 @@ export interface MessageExchange {
   role: 'user' | 'assistant';
   text: string;
   timestamp?: string;
+  /**
+   * What kind of turn this is. Absent means a spoken one, which is every turn every existing caller
+   * has ever seen — the panel's previews and `AutoResponder` both read text turns only.
+   *
+   * `'tool'` is an assistant turn that says nothing and activates a tool. Those are the bulk of a
+   * busy session and the reason the field exists: the Telegram mirror wants to *sample* them
+   * (`sessionSitter.telegram.toolActivitySeconds`) while posting every spoken turn, and it cannot
+   * tell the two apart from the text alone.
+   */
+  kind?: 'text' | 'tool';
 }
 
 export interface ClaudeSession {

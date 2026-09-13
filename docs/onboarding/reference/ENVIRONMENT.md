@@ -88,6 +88,10 @@ naming.
 | `SESSION_SITTER_TELEGRAM_ALLOWED_USER_IDS` | `sessionSitter.telegram.allowedUserIds` | — |
 | `SESSION_SITTER_TELEGRAM_FULL_MESSAGES` | `sessionSitter.telegram.fullMessages` | `true` |
 | `SESSION_SITTER_TELEGRAM_MAX_MESSAGE_PARTS` | `sessionSitter.telegram.maxMessageParts` | `4` |
+| `SESSION_SITTER_TELEGRAM_MAX_TURNS_PER_PASS` | `sessionSitter.telegram.maxTurnsPerPass` | `12` |
+| `SESSION_SITTER_TELEGRAM_STATUS_HOLD_SECONDS` | `sessionSitter.telegram.statusHoldSeconds` | `60` |
+| `SESSION_SITTER_TELEGRAM_MIRROR_TOOL_ACTIVITY` | `sessionSitter.telegram.mirrorToolActivity` | `true` |
+| `SESSION_SITTER_TELEGRAM_TOOL_ACTIVITY_SECONDS` | `sessionSitter.telegram.toolActivitySeconds` | `60` |
 
 The allowlist is separated by **commas or whitespace**, because both are what people type into a shell
 profile:
@@ -118,7 +122,7 @@ review goes wrong.
 a `settings.json` review asks, and it is what `ss-config.mjs check` resolves.
 
 **"How does a terminal configure this setting?"** — `HEADLESS_EQUIVALENT` in
-`src/settingsBridge.ts`, which names an answer for **all 38 settings** and is checked against
+`src/settingsBridge.ts`, which names an answer for **all 42 settings** and is checked against
 `package.json` in both directions by CI. The daemon, the CLI and the hooks read it; the extension does
 not. Three kinds of answer, because there are genuinely three: an environment variable, a
 command-line flag where the setting is *consent* to something with a side effect, or nothing needed

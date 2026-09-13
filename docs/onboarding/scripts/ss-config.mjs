@@ -309,11 +309,15 @@ const ENV_FALLBACKS = {
   'sessionSitter.supervisor.knowledgeRepo': ['KNOWLEDGE_REPO', 'KB_SITTER_KNOWLEDGE_REPO'],
   'sessionSitter.supervisor.knowledgeRef': ['KNOWLEDGE_REF'],
   'sessionSitter.knowledge.registryPath': ['KNOWLEDGE_REGISTRY_PATH'],
-  // The four remote-interface settings, layered by `layeredSettingsReader` in `src/extension.ts`.
+  // The remote-interface settings, layered by `layeredSettingsReader` in `src/extension.ts`.
   'sessionSitter.telegram.remoteControl': ['SESSION_SITTER_TELEGRAM_REMOTE_CONTROL'],
   'sessionSitter.telegram.allowedUserIds': ['SESSION_SITTER_TELEGRAM_ALLOWED_USER_IDS'],
   'sessionSitter.telegram.fullMessages': ['SESSION_SITTER_TELEGRAM_FULL_MESSAGES'],
   'sessionSitter.telegram.maxMessageParts': ['SESSION_SITTER_TELEGRAM_MAX_MESSAGE_PARTS'],
+  'sessionSitter.telegram.maxTurnsPerPass': ['SESSION_SITTER_TELEGRAM_MAX_TURNS_PER_PASS'],
+  'sessionSitter.telegram.statusHoldSeconds': ['SESSION_SITTER_TELEGRAM_STATUS_HOLD_SECONDS'],
+  'sessionSitter.telegram.mirrorToolActivity': ['SESSION_SITTER_TELEGRAM_MIRROR_TOOL_ACTIVITY'],
+  'sessionSitter.telegram.toolActivitySeconds': ['SESSION_SITTER_TELEGRAM_TOOL_ACTIVITY_SECONDS'],
 };
 
 /**

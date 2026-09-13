@@ -221,6 +221,51 @@ budget when several turns arrive in one pass: **the newest turn gets all of it a
 get one message each**, because the last turn is the one you are about to answer and the ones before
 it are context you skim.
 
+### Which turns you get: all of them, and a sample of the machinery
+
+Two rules, because a phone reader wants the two kinds of turn differently.
+
+**Everything spoken is posted.** Every message you send, and every message the agent writes that is
+not a tool call. A conversation with holes in it cannot be replied to, so there is no filtering here
+— only `sessionSitter.telegram.maxTurnsPerPass` (default 12), a backstop for a genuine burst, and
+past it the overflow is *named* rather than dropped:
+
+```
+… 26 earlier turns not shown — use Full transcript
+```
+
+That number used to be four, fixed, and it was wrong: a pass runs every few seconds, so five turns in
+one pass means the session is *talking*, which is exactly what you opened the topic for.
+
+**Tool activity is sampled.** An agent that spends ten minutes editing files says nothing in that
+time, and a topic showing nothing at all reads as a session that has stopped — while the panel, which
+shows a tool name beside the row, says otherwise about the same session. So one line is posted for
+it, at most once per quiet window:
+
+```
+🛠 Edit(src/telegram/render.ts) · +6 more tool calls
+```
+
+The window is `sessionSitter.telegram.toolActivitySeconds` (default 60) and it is measured from
+**anything** posted into the topic, a mirrored turn included: a turn already says the session is
+alive, which is the only thing a sample is for. So a talkative session shows no tool lines and a quiet
+one shows about one a minute — which is what makes this affordable inside a budget of twenty messages
+a minute for the whole group. A sample the window withholds is **not queued**: it is dropped, because
+posting it a minute later would report a call that has long since finished as though it were current.
+`sessionSitter.telegram.mirrorToolActivity: false` turns the lines off entirely.
+
+### Where mirroring resumes from
+
+A topic's record holds the **identity** of the last turn posted into it, not a count of turns.
+
+The count was the first design and it silently broke every busy session. The transcript reader hands
+back the last few turns rather than the whole file, so once a session had produced more turns than
+that window holds, the count it was compared against stopped growing — "how many turns exist" and
+"how many have been posted" became equal and stayed equal, and the topic went quiet for the rest of
+the session while the session itself carried on. Identity survives a window that slides; a count
+cannot. Where the anchor has fallen out of the window entirely its timestamp still orders it against
+what is in the window, so the turns after it are recovered rather than lost.
+
 Two buttons on the topic header:
 
 - **Full transcript** — uploaded as a Markdown file. A whole transcript is far past Telegram's
@@ -318,13 +363,33 @@ A session's topic is **deleted** as soon as the session leaves the active list. 
 timer: an active session keeps its topic open for as long as it is active. See
 [What counts as an active session](#what-counts-as-an-active-session).
 
+### The name is held for a minute, so the group is not a stream of renames
+
+A status is derived from a transcript, and an agent between tool calls leaves `working` and comes back
+to it seconds later. Every one of those wrote a rename, and Telegram announces a rename in the thread
+— so a single busy session produced a *Name changed* notice every few seconds and drowned out the
+sessions that actually needed somebody.
+
+A topic now keeps the name it has for `sessionSitter.telegram.statusHoldSeconds` (default 60) before a
+status change is written. It is a cooldown on **writing**, not a wait for the status to settle, and
+that distinction is the whole design: waiting for a status to hold steady would delay every rename
+by a minute, including the one you are waiting for. A cooldown delays only a rename that follows hard
+on the heels of another — which is exactly the flap — so a session that goes `working → seen →
+working` inside the window is never renamed at all, because by the time the window is up the name is
+already right.
+
+**A status that needs you is never held.** `approval`, `question` and `stalled` are the reason the
+topic list is worth reading, so they are written the moment they appear; showing one a minute late
+would trade a real cost for a cosmetic one. Set the hold to `0` for the old behaviour.
+
 ---
 
 ## Two limits worth knowing
 
 **Telegram's rate limit.** A bot may send on the order of 20 messages a minute to one group. A busy
-agent produces far more turns than that. So mirroring posts **user prompts and assistant text only**
-— no tool-by-tool noise — and a burst collapses into one line:
+agent produces far more turns than that. So mirroring posts every prompt and every answer, samples
+tool activity at one line per quiet minute, and collapses a burst into one line rather than queuing
+it:
 
 ```
 … 26 earlier turns not shown — use Full transcript
@@ -333,7 +398,7 @@ agent produces far more turns than that. So mirroring posts **user prompts and a
 ```
 
 Queuing the burst instead would put the group minutes behind the session, which is worse than saying
-what was skipped.
+what was skipped. See [Which turns you get](#which-turns-you-get-all-of-them-and-a-sample-of-the-machinery).
 
 **`/new` starts the session, names it, and gives it a topic.** `primaryEditor.open` returns no id, so
 this used to report only that a window had been opened and promise a topic "once it writes its first

@@ -32,8 +32,27 @@ import type { Ownership } from './ownership';
 export const MAX_MESSAGE_CHARS = 4096;
 /** Telegram's forum topic name limit. */
 export const MAX_TOPIC_NAME_CHARS = 128;
-/** Turns posted per mirror pass, per topic. Overflow collapses into one summary line. */
-export const MAX_TURNS_PER_PASS = 4;
+/**
+ * Spoken turns posted per mirror pass, per topic, by default. Overflow collapses into one line.
+ *
+ * A backstop against Telegram's rate limit, and no longer a policy. It used to be four, which made
+ * the mirror drop turns on any pass that saw five — and since a pass runs every few seconds, five
+ * turns in one pass means the session is *saying* things, which is exactly what a reader is there
+ * for. Twelve is high enough that only a genuine burst reaches it and low enough that one topic
+ * cannot spend the whole group's minute. See `sessionSitter.telegram.maxTurnsPerPass`.
+ */
+export const MAX_TURNS_PER_PASS_DEFAULT = 12;
+/**
+ * The most turns one pass may ever be asked to post.
+ *
+ * Well past Telegram's ~20-a-minute allowance for one group, because past that point the limit is
+ * enforced by Telegram either way and the honest thing is to let the setting say what it means.
+ */
+export const MAX_TURNS_PER_PASS_LIMIT = 50;
+/** How long a tool sample waits after anything else was posted, by default. */
+export const TOOL_SAMPLE_SECONDS_DEFAULT = 60;
+/** How long a topic name is held at its last value before a status change is written, by default. */
+export const STATUS_HOLD_SECONDS_DEFAULT = 60;
 /** Messages one turn may be split into, by default. See `sessionSitter.telegram.maxMessageParts`. */
 export const MAX_MESSAGE_PARTS_DEFAULT = 4;
 /**
@@ -391,15 +410,37 @@ export function splitMessages(lead: string, body: string, maxParts: number): str
  * splitting existed — so a caller that has not opted in is unaffected.
  */
 export function renderTurn(turn: MessageExchange, maxParts = 1): string[] {
-  const icon = turn.role === 'user' ? '🧑' : '🤖';
+  // A third glyph for tool activity, because it is a different *kind* of thing from a spoken turn:
+  // 🤖 means the agent said something to you, 🛠 means it did something. Reusing 🤖 for both would
+  // make a sampled tool line read as an answer that had been cut short.
+  const icon = turn.kind === 'tool' ? '🛠' : turn.role === 'user' ? '🧑' : '🤖';
   return splitMessages(`${icon} `, turn.text, maxParts);
+}
+
+/**
+ * How far mirroring has got in one topic.
+ *
+ * A **count** was the first design and it is wrong, because the transcript reader returns a sliding
+ * window of the last few turns rather than the whole file. Once a session had produced as many turns
+ * as that window holds, `turns.length` stopped growing while the cursor stayed equal to it — so
+ * `turns.length <= cursor` was true on every pass thereafter and the topic went silent for the rest
+ * of the session. That is the "nothing is being reported" this cursor replaces.
+ *
+ * The fix is to anchor on the *identity* of the last posted turn instead. Identity survives a window
+ * that slides, which a count cannot.
+ */
+export interface MirrorCursor {
+  /** `turnKey` of the last turn posted, or absent when nothing has been. */
+  key?: string;
+  /** How many turns have been posted in total. Kept for the log line, and for legacy records. */
+  count: number;
 }
 
 export interface MirrorPlan {
   /** Messages to post, in order. */
   messages: string[];
-  /** New cursor value to persist once every message is posted. */
-  nextCursor: number;
+  /** New cursor to persist once every message is posted. */
+  nextCursor: MirrorCursor;
 }
 
 export interface MirrorOptions {
@@ -412,38 +453,140 @@ export interface MirrorOptions {
    * to be split carries a `(1/2)` tag and a speaker icon, and would never match what was sent.
    */
   recentlySent?: string[];
+  /** Spoken turns one pass may post before the overflow collapses into a line. */
+  maxTurns?: number;
+  /** Post sampled tool activity at all. Off means spoken turns only, as the mirror used to be. */
+  mirrorTools?: boolean;
+  /**
+   * How quiet a topic has to have been before one tool line is sampled into it. 0 samples every pass.
+   */
+  toolSampleMs?: number;
+  /** When the topic was last posted into, and now — the two ends of the quiet window. */
+  lastPostedAt?: number;
+  now?: number;
+}
+
+/**
+ * The identity of one turn, stable across reads of the same transcript.
+ *
+ * Built from the timestamp, the speaker, the kind and the shape of the text rather than from an id,
+ * because a transcript turn has no id — the record does, but the reader collapses several records
+ * into one turn. The timestamp leads so that a key whose turn has fallen out of the read window can
+ * still be *compared* against the turns that are in it; `freshTurns` relies on that.
+ *
+ * Only a prefix of the text takes part. Full mode and preview mode return the same turn at different
+ * lengths, so a key over the whole body would change when `fullMessages` is toggled and re-post the
+ * tail of the conversation; a prefix plus the length is enough to tell two turns apart.
+ */
+export function turnKey(turn: MessageExchange): string {
+  const body = turn.text.replace(/\s+/g, ' ').trim();
+  return [
+    turn.timestamp ?? '', turn.role, turn.kind ?? 'text', body.length, body.slice(0, 32),
+  ].join('|');
+}
+
+/** The timestamp a key was built from, or undefined when the turn had none. */
+function timestampOfKey(key: string): string | undefined {
+  const stamp = key.split('|')[0];
+  return stamp.length > 0 ? stamp : undefined;
+}
+
+/**
+ * The turns that have arrived since the cursor was written.
+ *
+ * Three cases, and the order matters:
+ *
+ *  1. **The anchor is in the window.** Everything after it is new. The normal case.
+ *  2. **The anchor has fallen out of the window**, because the session produced more turns between
+ *     two passes than the reader returns. Its timestamp still orders it against what *is* in the
+ *     window, so the turns newer than it are recovered rather than lost.
+ *  3. **There is no anchor** — a legacy record, or a topic created before anything was posted. The
+ *     count is all there is, so it is used exactly as it used to be, and the next pass has a key.
+ *
+ * Where no comparison is possible at all the answer is "nothing new". Skipping a turn costs one line
+ * in a topic; guessing the other way re-posts a conversation.
+ */
+function freshTurns(turns: MessageExchange[], cursor: MirrorCursor): MessageExchange[] {
+  if (cursor.key === undefined) {
+    return turns.slice(Math.min(Math.max(0, cursor.count), turns.length));
+  }
+  const at = turns.findIndex(turn => turnKey(turn) === cursor.key);
+  if (at >= 0) { return turns.slice(at + 1); }
+  const since = timestampOfKey(cursor.key);
+  if (since === undefined) { return []; }
+  return turns.filter(turn => turn.timestamp !== undefined && turn.timestamp > since);
+}
+
+/** The cursor to persist after consuming `fresh` out of `turns`. */
+function cursorAfter(
+  turns: MessageExchange[], cursor: MirrorCursor, fresh: MessageExchange[],
+): MirrorCursor {
+  const last = turns[turns.length - 1];
+  return {
+    key: last === undefined ? cursor.key : turnKey(last),
+    count: Math.max(0, cursor.count) + fresh.length,
+  };
+}
+
+/**
+ * One line standing for the tool calls a session made while it had nothing to say.
+ *
+ * The newest call, because it is the one still running, plus a count of the ones behind it. A session
+ * that spends ten minutes editing files says nothing in that time, and a topic that shows nothing at
+ * all reads as a session that has stopped — this is the smallest thing that distinguishes "working"
+ * from "dead" without turning the group into a tool log.
+ */
+export function renderToolSample(tools: MessageExchange[]): string[] {
+  const newest = tools[tools.length - 1];
+  const behind = tools.length - 1;
+  const suffix = behind > 0 ? ` · +${behind} more tool call${behind === 1 ? '' : 's'}` : '';
+  return renderTurn({ ...newest, text: `${newest.text}${suffix}` }, 1);
 }
 
 /**
  * Decide what to post into a topic given the transcript and how far mirroring got.
  *
- * The cap is the point of this function. When a session produces 30 turns between passes, posting
- * all 30 would blow the group's rate limit and push everything else minutes behind. So the most
- * recent `MAX_TURNS_PER_PASS` are posted and the rest are acknowledged in one line — the cursor
- * still advances past all of them, because the skipped turns are in the transcript the user can
- * fetch, and pretending otherwise would replay them forever.
+ * ## Everything spoken, and a sample of everything else
+ *
+ * The two kinds of turn are treated differently on purpose, because a person reading a topic on a
+ * phone wants them differently:
+ *
+ *  - **Spoken turns** — what you typed, and what the agent answered — are all posted. These are the
+ *    conversation, and a conversation with holes in it cannot be replied to. Only a genuine burst
+ *    past `maxTurns` collapses, and then the overflow is *named* rather than dropped silently.
+ *  - **Tool activity** is sampled: at most one line, and only into a topic that has been quiet for
+ *    `toolSampleMs`. A busy session makes hundreds of tool calls a minute, so posting them is not a
+ *    matter of taste but of Telegram's ~20-messages-a-minute limit — a session that spent it on tool
+ *    calls would hold up every other session's turns. One line a minute is enough to see that the
+ *    agent is working and on what; the transcript has the rest.
+ *
+ * A pass that posts a spoken turn posts no sample: the turn already said the session is alive, which
+ * is the only thing a sample is for.
  *
  * ## Who gets the parts budget
  *
- * Splitting long turns and capping turns per pass pull against each other: four turns at four parts
+ * Splitting long turns and posting several of them pull against each other: four turns at four parts
  * each is sixteen messages, most of a minute's allowance for the whole group. So the budget is not
  * shared out evenly — **the newest turn of the pass gets all of it, and the older ones get one part
- * each.** When several turns arrive together the last is the one being answered, and the earlier
- * ones are context you skim. That holds the worst case to `MAX_TURNS_PER_PASS - 1` plus the budget,
- * and spends the messages on the text that is actually about to be read.
- *
- * The cursor counts **turns**, never messages, so a turn that took five messages is still one step
- * — counting messages would leave the cursor short and replay the tail of every long answer.
+ * each.** When several turns arrive together the last is the one being answered, and the earlier ones
+ * are context you skim.
  */
 export function planMirror(
-  turns: MessageExchange[], cursor: number, opts: MirrorOptions = {},
+  turns: MessageExchange[], cursor: MirrorCursor | number, opts: MirrorOptions = {},
 ): MirrorPlan {
-  if (turns.length <= cursor) { return { messages: [], nextCursor: turns.length }; }
-  const maxParts = Math.max(1, Math.floor(opts.maxParts ?? 1));
-  const fresh = turns.slice(cursor);
-  const skipped = Math.max(0, fresh.length - MAX_TURNS_PER_PASS);
-  const shown = skipped > 0 ? fresh.slice(-MAX_TURNS_PER_PASS) : fresh;
+  // A bare number is the count-only anchor, which is what a record written before keys existed
+  // holds, and what most callers pass in a test.
+  const from: MirrorCursor = typeof cursor === 'number' ? { count: cursor } : cursor;
+  const fresh = freshTurns(turns, from);
+  if (fresh.length === 0) { return { messages: [], nextCursor: cursorAfter(turns, from, fresh) }; }
 
+  const maxParts = Math.max(1, Math.floor(opts.maxParts ?? 1));
+  const maxTurns = Math.max(1, Math.floor(opts.maxTurns ?? MAX_TURNS_PER_PASS_DEFAULT));
+  const spoken = fresh.filter(turn => turn.kind !== 'tool');
+  const tools = fresh.filter(turn => turn.kind === 'tool');
+
+  const skipped = Math.max(0, spoken.length - maxTurns);
+  const shown = skipped > 0 ? spoken.slice(-maxTurns) : spoken;
   const messages: string[] = skipped > 0
     ? [`… ${skipped} earlier turn${skipped === 1 ? '' : 's'} not shown — use Full transcript`]
     : [];
@@ -455,7 +598,15 @@ export function planMirror(
     const newest = i === shown.length - 1;
     messages.push(...renderTurn(turn, newest ? maxParts : 1));
   }
-  return { messages, nextCursor: turns.length };
+
+  if (messages.length === 0 && tools.length > 0 && opts.mirrorTools === true) {
+    const quietFor = (opts.now ?? 0) - (opts.lastPostedAt ?? 0);
+    if (quietFor >= (opts.toolSampleMs ?? 0)) { messages.push(...renderToolSample(tools)); }
+  }
+
+  // The cursor advances past every fresh turn, sampled tool calls included. They are a sample, not a
+  // queue: holding an unsampled call back would post it a minute late as though it were current.
+  return { messages, nextCursor: cursorAfter(turns, from, fresh) };
 }
 
 /**

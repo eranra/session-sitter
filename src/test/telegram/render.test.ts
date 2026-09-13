@@ -4,9 +4,11 @@ import {
   MAX_MESSAGE_PARTS_DEFAULT,
   MAX_MESSAGE_PARTS_LIMIT,
   MAX_TOPIC_NAME_CHARS,
-  MAX_TURNS_PER_PASS,
+  MAX_TURNS_PER_PASS_DEFAULT,
   isEchoOfSent,
   planMirror,
+  renderToolSample,
+  turnKey,
   relativeAge,
   fleetSignature,
   renderFleetList,
@@ -331,15 +333,23 @@ describe('renderTopicHeader', () => {
 
 describe('planMirror', () => {
   const turn = (text: string): MessageExchange => ({ role: 'user', text });
-
   it('posts nothing when there is nothing new', () => {
-    expect(planMirror([turn('a')], 1)).toEqual({ messages: [], nextCursor: 1 });
+    const plan = planMirror([turn('a')], 1);
+    expect(plan.messages).toEqual([]);
+    expect(plan.nextCursor.count).toBe(1);
   });
 
   it('posts each new turn', () => {
     const plan = planMirror([turn('a'), turn('b')], 0);
     expect(plan.messages).toHaveLength(2);
-    expect(plan.nextCursor).toBe(2);
+    expect(plan.nextCursor.count).toBe(2);
+  });
+
+  it('posts every spoken turn of an ordinary pass', () => {
+    // The conversation is the thing a reader is there for, and one with holes in it cannot be
+    // replied to. Only a burst past the budget collapses.
+    const turns = Array.from({ length: MAX_TURNS_PER_PASS_DEFAULT }, (_, i) => turn(`t${i}`));
+    expect(planMirror(turns, 0).messages).toHaveLength(MAX_TURNS_PER_PASS_DEFAULT);
   });
 
   it('collapses a burst rather than flooding the group', () => {
@@ -347,15 +357,20 @@ describe('planMirror', () => {
     // put every other topic minutes behind, so the overflow becomes one line.
     const turns = Array.from({ length: 30 }, (_, i) => turn(`t${i}`));
     const plan = planMirror(turns, 0);
-    expect(plan.messages).toHaveLength(MAX_TURNS_PER_PASS + 1);
-    expect(plan.messages[0]).toContain('26 earlier turns not shown');
-    expect(plan.nextCursor).toBe(30);
+    expect(plan.messages).toHaveLength(MAX_TURNS_PER_PASS_DEFAULT + 1);
+    expect(plan.messages[0]).toContain(`${30 - MAX_TURNS_PER_PASS_DEFAULT} earlier turns not shown`);
+    expect(plan.nextCursor.count).toBe(30);
+  });
+
+  it('takes the per-pass budget from the caller', () => {
+    const turns = Array.from({ length: 6 }, (_, i) => turn(`t${i}`));
+    expect(planMirror(turns, 0, { maxTurns: 2 }).messages).toHaveLength(3);
   });
 
   it('keeps the most recent turns when it collapses', () => {
-    const turns = Array.from({ length: 10 }, (_, i) => turn(`t${i}`));
+    const turns = Array.from({ length: 40 }, (_, i) => turn(`t${i}`));
     const plan = planMirror(turns, 0);
-    expect(plan.messages[plan.messages.length - 1]).toContain('t9');
+    expect(plan.messages[plan.messages.length - 1]).toContain('t39');
   });
 
   it('advances past skipped turns so they are never replayed', () => {
@@ -366,17 +381,150 @@ describe('planMirror', () => {
 
   it('recovers when the transcript is shorter than the cursor', () => {
     // A truncated or replaced transcript must not produce a negative slice.
-    expect(planMirror([turn('a')], 5)).toEqual({ messages: [], nextCursor: 1 });
+    const plan = planMirror([turn('a')], 5);
+    expect(plan.messages).toEqual([]);
+    expect(plan.nextCursor.count).toBe(5);
   });
 
   it('uses the singular for exactly one skipped turn', () => {
-    const turns = Array.from({ length: MAX_TURNS_PER_PASS + 1 }, (_, i) => turn(`t${i}`));
+    const turns = Array.from(
+      { length: MAX_TURNS_PER_PASS_DEFAULT + 1 }, (_, i) => turn(`t${i}`));
     expect(planMirror(turns, 0).messages[0]).toContain('1 earlier turn not shown');
   });
 
   it('marks who said each turn', () => {
     const plan = planMirror([{ role: 'assistant', text: 'done' }], 0);
     expect(plan.messages[0]).toContain('🤖');
+  });
+});
+
+describe('planMirror resumes from the last turn it posted', () => {
+  const stamped = (text: string, seconds: number): MessageExchange => ({
+    role: 'assistant', text, timestamp: new Date(NOW + seconds * 1000).toISOString(),
+  });
+
+  it('keeps posting once the reader\'s window stops growing', () => {
+    // The defect this cursor replaces. The transcript reader returns a sliding window of the last
+    // few turns, so a count-based cursor caught up with `turns.length` and stayed there: every
+    // later pass saw "nothing new" and the topic went silent for the rest of the session.
+    const window = (from: number) =>
+      Array.from({ length: 6 }, (_, i) => stamped(`t${from + i}`, from + i));
+
+    let cursor = planMirror(window(0), 6).nextCursor;
+    const posted: string[] = [];
+    for (let pass = 1; pass <= 4; pass++) {
+      const plan = planMirror(window(pass), cursor);
+      posted.push(...plan.messages);
+      cursor = plan.nextCursor;
+    }
+    expect(posted).toHaveLength(4);
+    expect(posted[3]).toContain('t9');
+  });
+
+  it('recovers turns newer than an anchor that has fallen out of the window', () => {
+    // A session that produces more turns between two passes than the window holds pushes the
+    // anchor out of it. The anchor's timestamp still orders it against what is in the window.
+    const first = planMirror([stamped('a', 1)], 0);
+    const later = [stamped('c', 3), stamped('d', 4)];
+    const plan = planMirror(later, first.nextCursor);
+    expect(plan.messages).toHaveLength(2);
+  });
+
+  it('posts nothing rather than reposting when nothing can be compared', () => {
+    // No timestamps and no anchor in the window: skipping a turn costs one line, guessing the
+    // other way reposts a conversation.
+    const first = planMirror([{ role: 'user', text: 'a' }], 0);
+    const plan = planMirror([{ role: 'user', text: 'b' }], first.nextCursor);
+    expect(plan.messages).toEqual([]);
+  });
+
+  it('leaves the anchor alone when the transcript reads back empty', () => {
+    const cursor = { key: turnKey(stamped('a', 1)), count: 1 };
+    expect(planMirror([], cursor).nextCursor).toEqual(cursor);
+  });
+});
+
+describe('turnKey', () => {
+  it('is the same for the same turn read twice', () => {
+    const turn: MessageExchange = { role: 'user', text: 'hello', timestamp: 'ts' };
+    expect(turnKey(turn)).toBe(turnKey({ ...turn }));
+  });
+
+  it('tells two turns with the same text apart by their timestamp', () => {
+    expect(turnKey({ role: 'user', text: 'again', timestamp: 't1' }))
+      .not.toBe(turnKey({ role: 'user', text: 'again', timestamp: 't2' }));
+  });
+
+  it('tells a tool turn apart from a spoken one', () => {
+    expect(turnKey({ role: 'assistant', text: 'x', kind: 'tool' }))
+      .not.toBe(turnKey({ role: 'assistant', text: 'x' }));
+  });
+
+  it('ignores the whitespace a transcript reader may normalise', () => {
+    expect(turnKey({ role: 'user', text: 'a  b' })).toBe(turnKey({ role: 'user', text: 'a b' }));
+  });
+});
+
+describe('planMirror samples tool activity', () => {
+  const tool = (text: string, seconds: number): MessageExchange => ({
+    role: 'assistant', text, kind: 'tool',
+    timestamp: new Date(NOW + seconds * 1000).toISOString(),
+  });
+  const sampling = { mirrorTools: true, toolSampleMs: 60_000, now: NOW, lastPostedAt: NOW - 90_000 };
+
+  it('posts one line for a quiet topic', () => {
+    const plan = planMirror([tool('Edit(src/a.ts)', 1)], 0, sampling);
+    expect(plan.messages).toHaveLength(1);
+    expect(plan.messages[0]).toContain('🛠');
+    expect(plan.messages[0]).toContain('Edit(src/a.ts)');
+  });
+
+  it('names how many calls it stands for', () => {
+    const tools = [tool('Read(a)', 1), tool('Edit(b)', 2), tool('Bash(c)', 3)];
+    expect(planMirror(tools, 0, sampling).messages[0])
+      .toBe('🛠 Bash(c) · +2 more tool calls');
+  });
+
+  it('says nothing while the topic is still inside the quiet window', () => {
+    const plan = planMirror([tool('Edit(a)', 1)], 0, { ...sampling, lastPostedAt: NOW - 1_000 });
+    expect(plan.messages).toEqual([]);
+  });
+
+  it('advances the cursor past a sample it withheld, so it is never posted late', () => {
+    const tools = [tool('Edit(a)', 1)];
+    const plan = planMirror(tools, 0, { ...sampling, lastPostedAt: NOW });
+    expect(plan.messages).toEqual([]);
+    expect(planMirror(tools, plan.nextCursor, sampling).messages).toEqual([]);
+  });
+
+  it('gives the pass to the spoken turn when there is one', () => {
+    // A turn already says the session is alive, which is the only thing a sample is for.
+    const plan = planMirror(
+      [tool('Edit(a)', 1), { role: 'assistant', text: 'done', timestamp: 'z' }], 0, sampling);
+    expect(plan.messages).toHaveLength(1);
+    expect(plan.messages[0]).toContain('done');
+  });
+
+  it('does not count a tool turn against the spoken budget', () => {
+    const turns: MessageExchange[] = [
+      ...Array.from({ length: 30 }, (_, i) => tool(`Edit(${i})`, i)),
+      { role: 'assistant', text: 'done', timestamp: 'z' },
+    ];
+    const plan = planMirror(turns, 0, sampling);
+    expect(plan.messages).toHaveLength(1);
+    expect(plan.messages[0]).not.toContain('not shown');
+  });
+
+  it('ignores tool turns altogether when sampling is off', () => {
+    expect(planMirror([tool('Edit(a)', 1)], 0, { ...sampling, mirrorTools: false }).messages)
+      .toEqual([]);
+  });
+});
+
+describe('renderToolSample', () => {
+  it('reads as activity rather than as an answer', () => {
+    const line = renderToolSample([{ role: 'assistant', text: 'Bash(make check)', kind: 'tool' }]);
+    expect(line).toEqual(['🛠 Bash(make check)']);
   });
 });
 
@@ -551,19 +699,18 @@ describe('planMirror parts budget', () => {
     expect(plan.messages[plan.messages.length - 1]).toContain('(3/3)');
   });
 
-  it('stays under the group rate limit in the worst case', () => {
+  it('holds the worst case to the budget it was given', () => {
     const turns = Array.from({ length: 30 }, () => turn('x'.repeat(200_000)));
-    const plan = planMirror(turns, 0, { maxParts: MAX_MESSAGE_PARTS_LIMIT });
-    // one collapse line + (MAX_TURNS_PER_PASS - 1) single parts + the newest turn's full budget.
-    expect(plan.messages.length)
-      .toBe(1 + (MAX_TURNS_PER_PASS - 1) + MAX_MESSAGE_PARTS_LIMIT);
+    const plan = planMirror(turns, 0, { maxParts: MAX_MESSAGE_PARTS_LIMIT, maxTurns: 4 });
+    // one collapse line + (maxTurns - 1) single parts + the newest turn's full budget.
+    expect(plan.messages.length).toBe(1 + 3 + MAX_MESSAGE_PARTS_LIMIT);
   });
 
   it('advances the cursor by turns, not by messages', () => {
     // The cursor counts transcript turns. Counting messages would replay a split turn forever.
     const turns = [turn('a'), turn('x'.repeat(12_000))];
     const plan = planMirror(turns, 0, { maxParts: 4 });
-    expect(plan.nextCursor).toBe(2);
+    expect(plan.nextCursor.count).toBe(2);
     expect(planMirror(turns, plan.nextCursor, { maxParts: 4 }).messages).toEqual([]);
   });
 
@@ -585,7 +732,7 @@ describe('planMirror echo suppression', () => {
   it('does not repost a prompt this window just injected', () => {
     const plan = planMirror([{ role: 'user', text: sent }], 0, { recentlySent: [sent] });
     expect(plan.messages).toEqual([]);
-    expect(plan.nextCursor).toBe(1);
+    expect(plan.nextCursor.count).toBe(1);
   });
 
   it('suppresses a prompt long enough to have been split', () => {
@@ -606,7 +753,7 @@ describe('planMirror echo suppression', () => {
     );
     expect(plan.messages).toHaveLength(1);
     expect(plan.messages[0]).toContain('all green');
-    expect(plan.nextCursor).toBe(2);
+    expect(plan.nextCursor.count).toBe(2);
   });
 
   it('never suppresses an assistant turn, whatever was sent', () => {

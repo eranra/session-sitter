@@ -261,6 +261,42 @@
       "maximum": 20,
       "scope": "window"
     },
+    "sessionSitter.telegram.maxTurnsPerPass": {
+      "section": "Messaging",
+      "type": "number",
+      "default": 12,
+      "enum": null,
+      "minimum": 1,
+      "maximum": 50,
+      "scope": "window"
+    },
+    "sessionSitter.telegram.statusHoldSeconds": {
+      "section": "Messaging",
+      "type": "number",
+      "default": 60,
+      "enum": null,
+      "minimum": 0,
+      "maximum": 3600,
+      "scope": "window"
+    },
+    "sessionSitter.telegram.mirrorToolActivity": {
+      "section": "Messaging",
+      "type": "boolean",
+      "default": true,
+      "enum": null,
+      "minimum": null,
+      "maximum": null,
+      "scope": "window"
+    },
+    "sessionSitter.telegram.toolActivitySeconds": {
+      "section": "Messaging",
+      "type": "number",
+      "default": 60,
+      "enum": null,
+      "minimum": 0,
+      "maximum": 3600,
+      "scope": "window"
+    },
     "sessionSitter.supervisor.orangeResponseTimeoutMinutes": {
       "section": "Messaging",
       "type": "number",

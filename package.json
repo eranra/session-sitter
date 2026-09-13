@@ -394,6 +394,32 @@
             "maximum": 20,
             "markdownDescription": "How many Telegram messages one turn may be split into when `#sessionSitter.telegram.fullMessages#` is on. Four covers roughly 16,000 characters.\n\nAnything past the budget is not silently dropped: the last message ends with the exact number of characters left out and points at the **📄 Full transcript** button, which uploads the whole thing as a file.\n\nThe ceiling is 20 because that is about what Telegram accepts per minute for one group — a larger budget would let a single long answer hold up every other session's topic. When several turns arrive in the same pass, the budget goes to the **newest** one and the earlier ones get one message each, on the same reasoning: the last turn is the one you are about to answer."
           },
+          "sessionSitter.telegram.maxTurnsPerPass": {
+            "type": "number",
+            "default": 12,
+            "minimum": 1,
+            "maximum": 50,
+            "markdownDescription": "How many **spoken** turns one mirror pass may post into a topic before the overflow collapses into a single `… N earlier turns not shown` line.\n\nA backstop against Telegram's rate limit, not a policy: every user message and every agent message that is not a tool call is meant to reach the group. It used to be fixed at four, which dropped turns on any pass that saw five — and since a pass runs every few seconds, five turns in one pass means the session is *talking*, which is exactly what you are reading the topic for.\n\nRaise it if a fast session still collapses; the ceiling is 50 because past that Telegram enforces the limit itself."
+          },
+          "sessionSitter.telegram.statusHoldSeconds": {
+            "type": "number",
+            "default": 60,
+            "minimum": 0,
+            "maximum": 3600,
+            "markdownDescription": "How long a session's topic **keeps the name it has** before a status change is written to Telegram.\n\nA session's status comes from its transcript, and an agent between tool calls leaves `working` and returns to it seconds later. Each of those wrote a rename, so one busy session filled the group with *Name changed* notices and drowned out the sessions that actually needed you.\n\nThis is a cooldown on *writing*, not a wait for the status to settle — so a change that stands alone is still written immediately, and a session that goes `working → seen → working` inside the window is never renamed at all, because by the time the window is up the name is already right.\n\n`approval`, `question` and `stalled` are **never** held: they are the reason the topic list is worth reading. Set to `0` to write every change, as earlier builds did."
+          },
+          "sessionSitter.telegram.mirrorToolActivity": {
+            "type": "boolean",
+            "default": true,
+            "markdownDescription": "Post an occasional line saying **which tool** a session is running, so a working agent is visibly working.\n\nAn agent that spends ten minutes editing files says nothing in that time. Without this the topic shows nothing at all, which reads as a session that has stopped — and the panel, which shows a tool name beside the row, disagrees with the group about the same session.\n\nSampled, never streamed: at most one line, and only into a topic that has been quiet for `#sessionSitter.telegram.toolActivitySeconds#`. Turn it off for spoken turns only."
+          },
+          "sessionSitter.telegram.toolActivitySeconds": {
+            "type": "number",
+            "default": 60,
+            "minimum": 0,
+            "maximum": 3600,
+            "markdownDescription": "How long a topic must have been **quiet** before one line of tool activity is sampled into it, when `#sessionSitter.telegram.mirrorToolActivity#` is on.\n\nMeasured from anything posted, a mirrored turn included — a turn already says the session is alive, which is the only thing a sample is for. So a talkative session shows no tool lines at all and a quiet one shows about one a minute, which is what makes this affordable inside Telegram's ~20-messages-a-minute allowance for the whole group.\n\nThe line names the newest call and how many it stands for: `🛠 Edit(src/render.ts) · +6 more tool calls`. Lower it to watch a session more closely; `0` posts a line every pass, which a busy session will spend the group's whole budget on."
+          },
           "sessionSitter.supervisor.orangeResponseTimeoutMinutes": {
             "type": "number",
             "default": 30,

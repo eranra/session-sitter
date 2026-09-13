@@ -1,6 +1,6 @@
 # Every setting, and the question to ask about it
 
-All 38 settings, grouped the way the Settings UI groups them. Type, default, range and scope come
+All 42 settings, grouped the way the Settings UI groups them. Type, default, range and scope come
 from the extension's own declaration.
 
 **Do not treat this table as authoritative for a build you have in front of you.** It was written
@@ -188,6 +188,10 @@ suffix an agent harness understands and a plain Messages endpoint rejects.
 | `sessionSitter.telegram.allowedUserIds` | array of string | `[]` | window |
 | `sessionSitter.telegram.fullMessages` | boolean | `true` | window |
 | `sessionSitter.telegram.maxMessageParts` | number 1–20 | `4` | window |
+| `sessionSitter.telegram.maxTurnsPerPass` | number 1–50 | `12` | window |
+| `sessionSitter.telegram.statusHoldSeconds` | number 0–3600 | `60` | window |
+| `sessionSitter.telegram.mirrorToolActivity` | boolean | `true` | window |
+| `sessionSitter.telegram.toolActivitySeconds` | number 0–3600 | `60` | window |
 
 **`messagingChannel`** — `stub` or `telegram`. `stub` writes cards to `<stateDir>/notifications/` and
 reads replies from `<stateDir>/inbox/`.
@@ -225,14 +229,31 @@ updates rather than decision cards. They are recorded regardless.
 [`TELEGRAM-SETUP.md`](TELEGRAM-SETUP.md). The one that must be said out loud: **an empty
 `allowedUserIds` authorises nobody and the feature does not start.**
 
-All four have environment fallbacks — `SESSION_SITTER_TELEGRAM_REMOTE_CONTROL`, `_ALLOWED_USER_IDS`,
-`_FULL_MESSAGES`, `_MAX_MESSAGE_PARTS` — so a `settings.json` with none of them is not proof the
-feature is off. Check with `ss-config.mjs check`, which resolves the environment too. The allowlist
-variable splits on commas or whitespace.
+Every one of these has an environment fallback — `SESSION_SITTER_TELEGRAM_REMOTE_CONTROL`,
+`_ALLOWED_USER_IDS`, `_FULL_MESSAGES`, `_MAX_MESSAGE_PARTS`, `_MAX_TURNS_PER_PASS`,
+`_STATUS_HOLD_SECONDS`, `_MIRROR_TOOL_ACTIVITY`, `_TOOL_ACTIVITY_SECONDS` — so a `settings.json` with
+none of them is not proof the feature is off. Check with `ss-config.mjs check`, which resolves the
+environment too. The allowlist variable splits on commas or whitespace.
 
 `maxMessageParts` is a budget against Telegram's own ceiling of roughly 20 messages a minute to one
 group. Past the budget the last message names how many characters were left out and points at
 **📄 Full transcript**.
+
+**`maxTurnsPerPass`** is the same ceiling seen from the other side: how many *spoken* turns one pass
+may post before the overflow collapses into one line. Every user message and every agent message
+that is not a tool call is meant to reach the group, so treat this as a backstop and raise it if a
+fast session still collapses.
+
+**`statusHoldSeconds`** — how long a topic keeps the name it has before a status change is written.
+
+> **Ask:** only if they mention Telegram renaming topics constantly. An agent between tool calls
+> leaves `working` and comes back seconds later, and each of those was a rename. The default holds a
+> name for a minute, never holds `approval`, `question` or `stalled`, and `0` restores the old
+> behaviour.
+
+**`mirrorToolActivity`** and **`toolActivitySeconds`** — an occasional `🛠 Edit(src/render.ts)` line,
+so a session that is working but not talking is visibly working, sampled at most once per quiet
+window rather than streamed.
 
 ---
 

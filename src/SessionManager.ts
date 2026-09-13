@@ -70,6 +70,40 @@ export interface ExchangeOptions {
    * across several messages rather than cutting it off.
    */
   full?: boolean;
+  /**
+   * How many turns from the tail to return. Six by default — the panel's preview depth.
+   *
+   * The Telegram mirror asks for far more, and the reason is a bug this option exists to close. The
+   * mirror tracks how far it has posted; if a session produces more turns between two passes than
+   * this window holds, the ones that fell off the front are never seen by any pass and are lost from
+   * the topic for good. A deeper window costs a few more parsed lines out of a tail that is read
+   * either way.
+   */
+  limit?: number;
+  /**
+   * Also return the assistant turns that say nothing and activate a tool, as `kind: 'tool'`.
+   *
+   * Off by default, because the panel's preview bubbles and `AutoResponder` both want the
+   * conversation and not the machinery. The Telegram mirror wants them: a session that spends ten
+   * minutes editing files says nothing in that time, and a topic that shows nothing at all reads as
+   * a session that has stopped.
+   */
+  includeTools?: boolean;
+}
+
+/** Turns `getRecentExchanges` returns when the caller does not say. The panel's preview depth. */
+const DEFAULT_EXCHANGE_LIMIT = 6;
+
+/**
+ * How many turns to collect, from the option or the default.
+ *
+ * Floored at one rather than trusting the number: a hand-edited setting reaching here as `0` would
+ * turn every reader into one that returns nothing, which looks exactly like a session with no
+ * transcript.
+ */
+function exchangeLimit(opts: ExchangeOptions): number {
+  const limit = opts.limit ?? DEFAULT_EXCHANGE_LIMIT;
+  return Number.isFinite(limit) ? Math.max(1, Math.floor(limit)) : DEFAULT_EXCHANGE_LIMIT;
 }
 
 /**
@@ -120,6 +154,55 @@ function textOfContent(content: unknown, opts: ExchangeOptions): string | null {
     if (!opts.full) { break; }
   }
   return parts.length > 0 ? parts.join('\n\n') : null;
+}
+
+/**
+ * Keys worth showing beside a tool's name, in the order a reader would want them.
+ *
+ * A tool call's input is arbitrary JSON and most of it is noise on a phone: `Edit` carries the whole
+ * replacement text, `Bash` a command that may be a page long. One field identifies the call —
+ * *which* file, *which* command — and that is all a one-line sample is for.
+ */
+const TOOL_ARG_KEYS = [
+  'file_path', 'notebook_path', 'path', 'command', 'pattern', 'query', 'url', 'description',
+  'prompt', 'subagent_type',
+] as const;
+
+/**
+ * A one-line summary of the tools an assistant record activates, or null when it activates none.
+ *
+ * Deliberately short. This is what the mirror posts as a sample of a working session, so its job is
+ * to say *what the agent is doing* in the width of a Telegram bubble — `Edit(src/telegram/render.ts)`
+ * — not to reproduce the call. Several blocks in one record are joined, because Claude batches
+ * parallel tool calls into a single assistant message and reporting only the first would understate
+ * what the agent did.
+ */
+export function toolActivityOfContent(content: unknown): string | null {
+  if (!Array.isArray(content)) { return null; }
+  const parts: string[] = [];
+  for (const block of content) {
+    const b = block as { type?: string; name?: string; input?: unknown };
+    if (b.type !== 'tool_use' || typeof b.name !== 'string' || b.name.trim().length === 0) {
+      continue;
+    }
+    parts.push(`${b.name.trim()}${toolArgument(b.input)}`);
+  }
+  return parts.length > 0 ? parts.join(', ') : null;
+}
+
+/** The identifying argument of one tool call, parenthesised, or '' when nothing identifies it. */
+function toolArgument(input: unknown): string {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) { return ''; }
+  const record = input as Record<string, unknown>;
+  for (const key of TOOL_ARG_KEYS) {
+    const value = record[key];
+    if (typeof value !== 'string' || value.trim().length === 0) { continue; }
+    // First line only: a heredoc or a multi-line prompt would otherwise turn a one-line sample
+    // into the very flood the sampling exists to avoid.
+    const line = value.trim().split('\n')[0].trim();
+    return `(${line.length > 80 ? `${line.slice(0, 79)}…` : line})`;
+  }
+  return '';
 }
 
 // Structured turn for full-transcript export. All fields optional so partial
@@ -554,8 +637,9 @@ export class SessionManager implements vscode.Disposable {
       const chunk = buf.subarray(0, bytesRead).toString('utf8');
       const lines = chunk.split('\n');
       const collected: MessageExchange[] = [];
+      const limit = exchangeLimit(opts);
 
-      for (let i = lines.length - 1; i >= 0 && collected.length < 6; i--) {
+      for (let i = lines.length - 1; i >= 0 && collected.length < limit; i--) {
         const trimmed = lines[i].trim();
         if (!trimmed) { continue; }
         try {
@@ -577,6 +661,15 @@ export class SessionManager implements vscode.Disposable {
                 text: excerpt(text, 'assistant', opts),
                 timestamp: record.timestamp,
               });
+            } else if (opts.includeTools === true) {
+              // An assistant record with no text is the agent using a tool. Kept as its own kind
+              // rather than as text, so a caller can post every spoken turn and still sample these.
+              const tools = toolActivityOfContent(record.message?.content);
+              if (tools !== null) {
+                collected.push({
+                  role: 'assistant', text: tools, kind: 'tool', timestamp: record.timestamp,
+                });
+              }
             }
           }
         } catch {
@@ -627,7 +720,7 @@ export class SessionManager implements vscode.Disposable {
       } catch { /* skip malformed */ }
     }
 
-    return collected.slice(-6);
+    return collected.slice(-exchangeLimit(opts));
   }
 
   // Return every message for a Bob task, chronologically. Uses the same
@@ -748,7 +841,7 @@ export class SessionManager implements vscode.Disposable {
     return parseSessionFile(filePath);
   }
 
-  // Read the tail of a Codex rollout .jsonl and return the last <= 6 role-bearing
+  // Read the tail of a Codex rollout .jsonl and return the last `opts.limit` role-bearing
   // response_item records as MessageExchanges (user or assistant text only).
   private async _getCodexRecentExchanges(
     filePath: string, opts: ExchangeOptions = {},
@@ -770,7 +863,9 @@ export class SessionManager implements vscode.Disposable {
       const lines = chunk.split('\n');
       const collected: MessageExchange[] = [];
 
-      for (let i = lines.length - 1; i >= 0 && collected.length < 6; i--) {
+      const limit = exchangeLimit(opts);
+
+      for (let i = lines.length - 1; i >= 0 && collected.length < limit; i--) {
         const trimmed = lines[i].trim();
         if (!trimmed) { continue; }
         try {
@@ -1033,8 +1128,8 @@ export class SessionManager implements vscode.Disposable {
     const requests = snapshot.v?.requests ?? [];
     const collected: MessageExchange[] = [];
 
-    // Take up to the last 3 requests → up to 6 exchanges.
-    const startIdx = Math.max(0, requests.length - 3);
+    // A request is one user turn plus one answer, so half the turn budget covers it.
+    const startIdx = Math.max(0, requests.length - Math.max(1, Math.floor(exchangeLimit(opts) / 2)));
     for (let i = startIdx; i < requests.length; i++) {
       const r = requests[i];
       const iso = typeof r.timestamp === 'number' ? new Date(r.timestamp).toISOString() : undefined;

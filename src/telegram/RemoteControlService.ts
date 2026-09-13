@@ -46,7 +46,9 @@ import {
   claimCommand, dropCommand, expiredCommands, newCommandId, postCommand, postResult,
   readPendingCommands, takeResults, leasePath, sweep, type BusCommand,
 } from './bus';
-import { effectiveMessageParts, startupBlocker, type RemoteControlConfig } from './config';
+import {
+  effectiveMessageParts, startupBlocker, statusHoldMs, toolSampleMs, type RemoteControlConfig,
+} from './config';
 import { ForumApi, type ReplyMarkup } from './forum';
 import { classifyUpdate, decodeCallback, encodeCallback, type Intent } from './intent';
 import { ReaderLease, LEASE_RENEW_MS } from './lease';
@@ -57,10 +59,10 @@ import {
 import { health, heartbeatPath, readHeartbeat } from '../daemonHeartbeat';
 import {
   fleetSignature, planMirror, renderFleetList, renderHelp, renderHistoryList, renderTopicHeader,
-  renderWho, sessionLabel, topicName, type ListEntry,
+  renderWho, sessionLabel, topicName, turnKey, type ListEntry,
 } from './render';
 import { chooseLaunchTarget, targetCaveat } from './newSession';
-import { TopicStore, topicsToDelete, type TopicRecord } from './topics';
+import { shouldRenameTopic, TopicStore, topicsToDelete, type TopicRecord } from './topics';
 import { routeUpdate } from './updateRouter';
 
 /** Seconds `getUpdates` waits before returning empty, so a tap arrives near-instantly. */
@@ -71,6 +73,16 @@ const IDLE_PASS_MS = 3_000;
 const SWEEP_AFTER_MS = 10 * 60_000;
 /** Sent texts remembered per session, so the mirror does not echo them back. */
 const ECHO_MEMORY = 5;
+/**
+ * How many turns of a transcript the mirror reads each pass.
+ *
+ * Deeper than the panel's six, and the depth is load-bearing rather than generous. Mirroring resumes
+ * from the last turn it posted, so a session that produces more turns between two passes than this
+ * window holds pushes the anchor out of the window — and while `planMirror` recovers from that by
+ * timestamp, a window barely larger than a pass would be doing that recovery constantly. Tool
+ * activity spends this budget too, and a working agent makes far more tool calls than it speaks.
+ */
+const MIRROR_TAIL_TURNS = 60;
 
 export interface RemoteControlDeps {
   config: RemoteControlConfig;
@@ -286,14 +298,20 @@ export class RemoteControlService {
       return null;
     }
     const resolved = owner ?? { pid: null, basis: 'none' as const, workspace: '' };
+    // Start the cursor at the newest turn there is: a topic created now is a window onto what
+    // happens next, not a replay of everything that already happened. Anchored by identity, because
+    // a count cannot survive the reader's sliding window — see `MirrorCursor`.
+    const known = await this.turnsOf(session.sessionId);
+    const newest = known[known.length - 1];
     const record: TopicRecord = {
       threadId: created.value,
       sessionId: session.sessionId,
       source: session.source,
       name,
-      // Start the cursor at the current transcript length: a topic created now is a window onto
-      // what happens next, not a replay of everything that already happened.
-      mirroredTurns: (await this.turnsOf(session.sessionId)).length,
+      nameSetAt: this.now(),
+      mirroredTurns: known.length,
+      mirroredKey: newest === undefined ? undefined : turnKey(newest),
+      lastPostedAt: this.now(),
       closed: false,
       openedAt: this.now(),
       createdAt: this.now(),
@@ -321,7 +339,11 @@ export class RemoteControlService {
   }
 
   /**
-   * Post new turns, rename on a status change, and reopen a topic whose session started talking.
+   * Post new turns, rename on a status change that has waited its turn, and reopen a topic whose
+   * session started talking.
+   *
+   * The rename is held rather than written on sight — `shouldRenameTopic` says why, and it is the
+   * difference between a topic list and a stream of Telegram rename notices.
    *
    * Only ever called for a session that is currently active, so being active cannot itself be the
    * reason to reopen: a session open in a window stays active indefinitely, and reopening on that
@@ -330,17 +352,27 @@ export class RemoteControlService {
    */
   private async refreshTopic(session: ClaudeSession, record: TopicRecord): Promise<void> {
     let changed = false;
+    const now = this.now();
 
     const wanted = topicName(session);
-    if (wanted !== record.name) {
+    if (shouldRenameTopic(record, wanted, session.status, now, statusHoldMs(this.deps.config))) {
       const renamed = await this.forum.renameTopic(record.threadId, wanted);
-      if (renamed.ok) { record.name = wanted; changed = true; }
+      if (renamed.ok) {
+        record.name = wanted;
+        record.nameSetAt = now;
+        changed = true;
+      }
     }
 
     const turns = await this.turnsOf(session.sessionId);
-    const plan = planMirror(turns, record.mirroredTurns, {
+    const plan = planMirror(turns, { key: record.mirroredKey, count: record.mirroredTurns }, {
       maxParts: effectiveMessageParts(this.deps.config),
       recentlySent: this.recentlySent.get(session.sessionId) ?? [],
+      maxTurns: this.deps.config.maxTurnsPerPass,
+      mirrorTools: this.deps.config.mirrorToolActivity,
+      toolSampleMs: toolSampleMs(this.deps.config),
+      lastPostedAt: record.lastPostedAt,
+      now,
     });
     // Reopen before posting, not after: Telegram will not take a message into a closed topic, so
     // posting first would drop the very turns that justified the reopen.
@@ -358,11 +390,24 @@ export class RemoteControlService {
         this.log(`remote control: mirror post failed on ${record.threadId}: ${posted.error}`);
         // Leave the cursor where it is so the turn is retried, unless we are being rate limited —
         // in which case retrying the same turn forever would wedge the topic.
-        if (posted.retryAfterSeconds === undefined) { return; }
+        if (posted.retryAfterSeconds === undefined) {
+          // The rename, if there was one, has already happened on Telegram's side, so it is saved
+          // rather than lost to the early return — otherwise the next pass writes it again.
+          if (changed) { await this.topics.save(record); }
+          return;
+        }
       }
     }
-    if (plan.nextCursor !== record.mirroredTurns) {
-      record.mirroredTurns = plan.nextCursor;
+    if (plan.messages.length > 0) {
+      // The quiet window a tool sample waits for is measured from here, so it is set for a spoken
+      // turn as much as for a sample: one line a minute is the whole budget, whatever filled it.
+      record.lastPostedAt = now;
+      changed = true;
+    }
+    if (plan.nextCursor.key !== record.mirroredKey
+      || plan.nextCursor.count !== record.mirroredTurns) {
+      record.mirroredKey = plan.nextCursor.key;
+      record.mirroredTurns = plan.nextCursor.count;
       changed = true;
     }
     if (changed) { await this.topics.save(record); }
@@ -490,8 +535,13 @@ export class RemoteControlService {
    */
   private async turnsOf(sessionId: string) {
     try {
-      return await this.deps.sessionManager.getRecentExchanges(
-        sessionId, { full: this.deps.config.fullMessages });
+      return await this.deps.sessionManager.getRecentExchanges(sessionId, {
+        full: this.deps.config.fullMessages,
+        limit: MIRROR_TAIL_TURNS,
+        // Asked for whenever sampling is on, because the sample is chosen from these. With it off the
+        // mirror sees the conversation only, which is what it did before sampling existed.
+        includeTools: this.deps.config.mirrorToolActivity,
+      });
     } catch {
       return [];
     }

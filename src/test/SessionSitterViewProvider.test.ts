@@ -163,7 +163,7 @@ function setClaudePreferredLocation(location: 'sidebar' | 'panel'): void {
 vi.mock('child_process', () => ({ execFile: vi.fn() }));
 
 import * as vscode from 'vscode';
-import { SessionSitterViewProvider, claudeSidebarViewId } from '../SessionSitterViewProvider';
+import { SessionSitterViewProvider, claudeSidebarViewId, codexViewIds } from '../SessionSitterViewProvider';
 import { SessionManager } from '../SessionManager';
 import { execFile } from 'child_process';
 
@@ -574,6 +574,69 @@ describe('_openSessionLocal (Bob)', () => {
     p._openSessionLocal('bob-sess-1');
     expect(mockExecuteCommand).not.toHaveBeenCalledWith('claude-vscode.sidebar.open');
     expect(mockExecuteCommand).not.toHaveBeenCalledWith('claude-vscode.primaryEditor.open', expect.anything());
+  });
+});
+
+// ── Helpers for Codex sessions ────────────────────────────────────────────────
+
+function makeCodexSession(
+  overrides: Partial<import('../SessionManager').ClaudeSession> = {},
+): import('../SessionManager').ClaudeSession {
+  return {
+    sessionId: 'codex-sess-1',
+    projectPath: '/home/user/proj',
+    projectName: 'proj',
+    title: 'My Codex Thread',
+    updatedAt: new Date(),
+    status: 'seen' as const,
+    source: 'codex' as const,
+    ...overrides,
+  };
+}
+
+// ── Tests: Codex session switching ────────────────────────────────────────────
+// The Codex extension contributes `codexViewContainer` / `codexSecondaryViewContainer` — never
+// `openai-chatgpt`, which is the container id this used to guess at. VS Code rejects a command it
+// does not know, and the call site dropped that rejection on the floor, so clicking a Codex row
+// did nothing whatsoever and said nothing about why.
+describe('_openSessionLocal (Codex)', () => {
+  beforeEach(() => {
+    mockExecuteCommand.mockClear();
+    vi.mocked(os.homedir).mockReturnValue(os.tmpdir());
+  });
+  afterEach(() => { mockExecuteCommand.mockReset(); });
+
+  it("asks the Codex extension's own command to reveal its view", async () => {
+    const p = makeProvider([makeCodexSession()]) as unknown as {
+      _openSessionLocal(id: string): Promise<void>;
+    };
+    await p._openSessionLocal('codex-sess-1');
+    expect(mockExecuteCommand).toHaveBeenCalledWith('chatgpt.openSidebar');
+    expect(mockExecuteCommand).not.toHaveBeenCalledWith('workbench.view.extension.openai-chatgpt');
+  });
+
+  it('falls back to the container and the view when that command is not registered', async () => {
+    mockExecuteCommand.mockImplementation((cmd: string) => (
+      cmd === 'chatgpt.openSidebar'
+        ? Promise.reject(new Error(`command '${cmd}' not found`))
+        : Promise.resolve(undefined)
+    ));
+    const p = makeProvider([makeCodexSession()]) as unknown as {
+      _openSessionLocal(id: string): Promise<void>;
+    };
+    await p._openSessionLocal('codex-sess-1');
+    // VS Code 1.106 in the stub, so the view lives in the secondary side bar — where the user
+    // put it. Container first, then the view inside it, exactly as Codex focuses itself.
+    expect(mockExecuteCommand).toHaveBeenCalledWith('workbench.view.extension.codexSecondaryViewContainer');
+    expect(mockExecuteCommand).toHaveBeenCalledWith('chatgpt.sidebarSecondaryView.focus');
+  });
+
+  it('does not throw when the Codex extension is not installed at all', async () => {
+    mockExecuteCommand.mockRejectedValue(new Error('command not found'));
+    const p = makeProvider([makeCodexSession()]) as unknown as {
+      _openSessionLocal(id: string): Promise<void>;
+    };
+    await expect(p._openSessionLocal('codex-sess-1')).resolves.toBeUndefined();
   });
 });
 
@@ -1621,5 +1684,30 @@ describe('claudeSidebarViewId', () => {
   it('falls back to the activity bar side bar for an unparseable version', () => {
     expect(claudeSidebarViewId('')).toBe('claudeVSCodeSidebar');
     expect(claudeSidebarViewId('nonsense')).toBe('claudeVSCodeSidebar');
+  });
+});
+
+describe('codexViewIds', () => {
+  // The Codex extension gates its two containers on the same 1.106 line, with a `when` clause on
+  // a context key it sets itself. Only one of the two pairs exists in any given window, so the
+  // fallback has to pick the same one Codex did or it focuses a container that is not there.
+  it('uses the secondary side bar container from 1.106 onward', () => {
+    expect(codexViewIds('1.106.0')).toEqual({
+      containerId: 'codexSecondaryViewContainer', viewId: 'chatgpt.sidebarSecondaryView',
+    });
+    expect(codexViewIds('1.107.2').containerId).toBe('codexSecondaryViewContainer');
+    expect(codexViewIds('2.0.0').containerId).toBe('codexSecondaryViewContainer');
+  });
+
+  it('uses the activity bar container before 1.106', () => {
+    expect(codexViewIds('1.105.9')).toEqual({
+      containerId: 'codexViewContainer', viewId: 'chatgpt.sidebarView',
+    });
+    expect(codexViewIds('1.64.0').containerId).toBe('codexViewContainer');
+  });
+
+  it('falls back to the activity bar container for an unparseable version', () => {
+    expect(codexViewIds('').containerId).toBe('codexViewContainer');
+    expect(codexViewIds('nonsense').containerId).toBe('codexViewContainer');
   });
 });

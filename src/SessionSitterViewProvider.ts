@@ -106,6 +106,33 @@ export function claudeSidebarViewId(version: string = vscode.version): string {
   return hasSecondary ? 'claudeVSCodeSidebarSecondary' : 'claudeVSCodeSidebar';
 }
 
+/**
+ * The command the Codex extension registers to bring its own view forward.
+ *
+ * Preferred over driving the container ourselves: it is Codex's own focus routine, so it stays
+ * right across the layout changes we would otherwise have to keep guessing at.
+ */
+const CODEX_OPEN_SIDEBAR_COMMAND = 'chatgpt.openSidebar';
+
+/**
+ * Which container and view hold Codex's chat, for the fallback focus path.
+ *
+ * Codex contributes TWO containers and gates each on a `when` clause, so only one of them exists
+ * in any window: `codexSecondaryViewContainer` (holding `chatgpt.sidebarSecondaryView`) in the
+ * secondary side bar from VS Code 1.106, and `codexViewContainer` (holding
+ * `chatgpt.sidebarView`) in the activity bar before it. Same version line Claude draws, and the
+ * same reason: 1.106 is where the secondary side bar arrived. Exported for the unit test.
+ */
+export function codexViewIds(version: string = vscode.version): { containerId: string; viewId: string } {
+  const parts = version.split('.').map(Number);
+  const major = Number.isFinite(parts[0]) ? parts[0] : 0;
+  const minor = Number.isFinite(parts[1]) ? parts[1] : 0;
+  const hasSecondary = major > 1 || (major === 1 && minor >= 106);
+  return hasSecondary
+    ? { containerId: 'codexSecondaryViewContainer', viewId: 'chatgpt.sidebarSecondaryView' }
+    : { containerId: 'codexViewContainer', viewId: 'chatgpt.sidebarView' };
+}
+
 export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vscode.Disposable {
   public static readonly viewType = 'sessionSitter.view';
 
@@ -336,7 +363,7 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
             if (histSession?.source === 'bob') {
               void vscode.commands.executeCommand('bobChatView.focus');
             } else if (histSession?.source === 'codex') {
-              void vscode.commands.executeCommand('workbench.view.extension.openai-chatgpt');
+              await this._revealCodexView();
             } else if (histSession?.source === 'chat') {
               void vscode.commands.executeCommand('workbench.action.chat.open');
             } else {
@@ -529,7 +556,7 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
     }
 
     if (session.source === 'codex') {
-      void vscode.commands.executeCommand('workbench.view.extension.openai-chatgpt');
+      await this._revealCodexView();
       return;
     }
 
@@ -539,6 +566,43 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
     }
 
     await this._openClaudeSessionLocal(sessionId);
+  }
+
+  /**
+   * Bring Codex's chat forward.
+   *
+   * A Codex row cannot be aimed at a particular thread — Codex exposes no "resume this session"
+   * command — so revealing its view is the whole of the job. Doing even that used to fail
+   * silently: we asked for `workbench.view.extension.openai-chatgpt`, a container id derived from
+   * the extension's *identifier* (`openai.chatgpt`) rather than from what it actually contributes,
+   * which is `codexViewContainer` / `codexSecondaryViewContainer`. VS Code rejects a command it
+   * does not know, the call was fire-and-forget, and so a click on a Codex row did nothing at all
+   * and left nothing in the log to say why.
+   *
+   * So: ask Codex to focus itself, which is the one id that cannot drift out from under us, and
+   * keep the container walk as a fallback for a build that predates that command. Failures are
+   * logged rather than thrown — a missing Codex extension is a normal state for this panel, which
+   * lists sessions from four different harnesses.
+   */
+  private async _revealCodexView(): Promise<void> {
+    try {
+      await vscode.commands.executeCommand(CODEX_OPEN_SIDEBAR_COMMAND);
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this._log(`switch: ${CODEX_OPEN_SIDEBAR_COMMAND} did not run (${message}) — focusing Codex's view by id`);
+    }
+
+    const { containerId, viewId } = codexViewIds();
+    try {
+      // Container first, then the view inside it: the container command reveals the side bar Codex
+      // lives in, and the view command is what puts the chat itself in front.
+      await vscode.commands.executeCommand(`workbench.view.extension.${containerId}`);
+      await vscode.commands.executeCommand(`${viewId}.focus`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this._log(`switch: could not reveal Codex's view ${viewId} (${message}) — is the Codex extension installed?`);
+    }
   }
 
   /**

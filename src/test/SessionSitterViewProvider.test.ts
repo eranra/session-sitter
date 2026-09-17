@@ -163,7 +163,10 @@ function setClaudePreferredLocation(location: 'sidebar' | 'panel'): void {
 vi.mock('child_process', () => ({ execFile: vi.fn() }));
 
 import * as vscode from 'vscode';
-import { SessionSitterViewProvider, claudeSidebarViewId, codexViewIds } from '../SessionSitterViewProvider';
+import {
+  SessionSitterViewProvider, claudeSidebarViewId, codexViewIds,
+  LAST_VIEWED_KEY, PANEL_SECTIONS_KEY,
+} from '../SessionSitterViewProvider';
 import { SessionManager } from '../SessionManager';
 import { execFile } from 'child_process';
 
@@ -181,19 +184,24 @@ function setOpenClaudeTabs(labels: string[]): void {
  * Seed it to say "you already read this session at time T"; read it back to assert a click was
  * recorded. Without one the provider still works, it just cannot tell read from unread — which is
  * itself worth a test.
+ *
+ * Keyed properly rather than holding a single blob: the provider now keeps the panel's remembered
+ * section state under its own key, and a memento whose `get` ignores the key would hand each
+ * reader the other's value.
  */
-function makeMemento(seed: Record<string, number> = {}) {
-  let store: Record<string, number> = { ...seed };
+function makeMemento(seed: Record<string, number> = {}, extra: Record<string, unknown> = {}) {
+  const store: Record<string, unknown> = { [LAST_VIEWED_KEY]: { ...seed }, ...extra };
   return {
     memento: {
-      get: <T>(_key: string, fallback: T) => (store as unknown as T) ?? fallback,
-      update: (_key: string, value: unknown) => {
-        store = value as Record<string, number>;
+      get: <T>(key: string, fallback: T) => (key in store ? (store[key] as T) : fallback),
+      update: (key: string, value: unknown) => {
+        store[key] = value;
         return Promise.resolve();
       },
-      keys: () => ['sessionSitter.lastViewed'],
+      keys: () => Object.keys(store),
     } as unknown as import('vscode').Memento,
-    read: () => store,
+    read: () => store[LAST_VIEWED_KEY] as Record<string, number>,
+    readKey: (key: string) => store[key],
   };
 }
 
@@ -1709,5 +1717,147 @@ describe('codexViewIds', () => {
   it('falls back to the activity bar container for an unparseable version', () => {
     expect(codexViewIds('').containerId).toBe('codexViewContainer');
     expect(codexViewIds('nonsense').containerId).toBe('codexViewContainer');
+  });
+});
+
+// ── Tests: the panel remembers which sections were open ───────────────────────
+//
+// The Supervision activity feed is tall, and it used to arrive expanded on every single open
+// however many times you had collapsed it. The state is kept in globalState rather than in the
+// webview's own `setState` so that it is one answer for every window, and it is baked into the
+// markup rather than applied by a script so the panel does not visibly expand and then snap shut.
+describe('remembered panel sections', () => {
+  function resolveWebview(
+    provider: import('../SessionSitterViewProvider').SessionSitterViewProvider,
+  ) {
+    const webview = {
+      options: {},
+      html: '',
+      onDidReceiveMessage: vi.fn(),
+      postMessage: vi.fn(),
+      asWebviewUri: (u: unknown) => u,
+      cspSource: 'vscode-webview:',
+    };
+    const webviewView = {
+      webview,
+      onDidDispose: vi.fn(() => ({ dispose: vi.fn() })),
+      visible: true,
+    };
+    provider.resolveWebviewView(
+      webviewView as unknown as import('vscode').WebviewView,
+      {} as import('vscode').WebviewViewResolveContext,
+      { isCancellationRequested: false, onCancellationRequested: vi.fn() } as unknown as import('vscode').CancellationToken,
+    );
+    return {
+      html: webview.html,
+      handler: (webview.onDidReceiveMessage as ReturnType<typeof vi.fn>)
+        .mock.calls[0][0] as (msg: unknown) => Promise<void>,
+    };
+  }
+
+  /** The section's rendered `<button>` and `<div>`, so an assertion cannot match the other one. */
+  function section(html: string, id: string): string {
+    const start = html.indexOf(`<button id="${id}-toggle"`);
+    const end = html.indexOf('</div>', html.indexOf(`<div id="${id}-panel"`));
+    expect(start).toBeGreaterThan(-1);
+    return html.slice(start, end);
+  }
+
+  it('renders both sections at their defaults when nothing is remembered', () => {
+    const { html } = resolveWebview(makeProvider([], {}, { memento: makeMemento().memento }));
+    expect(section(html, 'activity')).toContain('aria-expanded="true"');
+    expect(section(html, 'activity')).not.toContain('hidden');
+    expect(section(html, 'history')).toContain('aria-expanded="false"');
+    expect(section(html, 'history')).toContain('hidden');
+  });
+
+  it('renders the defaults with no memento at all', () => {
+    const { html } = resolveWebview(makeProvider());
+    expect(section(html, 'activity')).toContain('aria-expanded="true"');
+    expect(section(html, 'history')).toContain('aria-expanded="false"');
+  });
+
+  it('renders Supervision activity collapsed when it was last left collapsed', () => {
+    const { memento } = makeMemento({}, { [PANEL_SECTIONS_KEY]: { activity: false } });
+    const { html } = resolveWebview(makeProvider([], {}, { memento }));
+    const activity = section(html, 'activity');
+    expect(activity).toContain('aria-expanded="false"');
+    expect(activity).toContain('hidden');
+    // The arrow is the only thing telling you it can be opened at all.
+    expect(activity).toContain('&#x25B6;');
+    expect(activity).not.toContain('&#x25BC;');
+  });
+
+  it('renders History expanded when it was last left expanded', () => {
+    const { memento } = makeMemento({}, { [PANEL_SECTIONS_KEY]: { history: true } });
+    const { html } = resolveWebview(makeProvider([], {}, { memento }));
+    const history = section(html, 'history');
+    expect(history).toContain('aria-expanded="true"');
+    expect(history).not.toContain('hidden');
+    expect(history).toContain('&#x25BC;');
+  });
+
+  it('falls back to the defaults for a remembered value of the wrong shape', () => {
+    const { memento } = makeMemento({}, { [PANEL_SECTIONS_KEY]: 'nonsense' });
+    const { html } = resolveWebview(makeProvider([], {}, { memento }));
+    expect(section(html, 'activity')).toContain('aria-expanded="true"');
+    expect(section(html, 'history')).toContain('aria-expanded="false"');
+  });
+
+  it('records a collapse, and a later expand, without disturbing the other section', async () => {
+    const { memento, readKey } = makeMemento();
+    const { handler } = resolveWebview(makeProvider([], {}, { memento }));
+
+    await handler({ type: 'setPanelSection', section: 'activity', open: false });
+    expect(readKey(PANEL_SECTIONS_KEY)).toEqual({ activity: false });
+
+    await handler({ type: 'setPanelSection', section: 'history', open: true });
+    expect(readKey(PANEL_SECTIONS_KEY)).toEqual({ activity: false, history: true });
+
+    await handler({ type: 'setPanelSection', section: 'activity', open: true });
+    expect(readKey(PANEL_SECTIONS_KEY)).toEqual({ activity: true, history: true });
+  });
+
+  it('does not lose the last-viewed stamps it shares the memento with', async () => {
+    const { memento, read } = makeMemento({ 'c-1': 1_234 });
+    const { handler } = resolveWebview(makeProvider([], {}, { memento }));
+    await handler({ type: 'setPanelSection', section: 'history', open: true });
+    expect(read()).toEqual({ 'c-1': 1_234 });
+  });
+
+  it('ignores a section name it does not know', async () => {
+    const { memento, readKey } = makeMemento();
+    const { handler } = resolveWebview(makeProvider([], {}, { memento }));
+    await handler({ type: 'setPanelSection', section: 'everything', open: false });
+    expect(readKey(PANEL_SECTIONS_KEY)).toBeUndefined();
+  });
+
+  it('survives a memento that refuses to be written', async () => {
+    const memento = {
+      get: <T>(_key: string, fallback: T) => fallback,
+      update: () => Promise.reject(new Error('disk full')),
+      keys: () => [],
+    } as unknown as import('vscode').Memento;
+    const { handler } = resolveWebview(makeProvider([], {}, { memento }));
+    await expect(handler({ type: 'setPanelSection', section: 'activity', open: false }))
+      .resolves.toBeUndefined();
+  });
+});
+
+// The webview's initial open/closed state now comes from the markup the host rendered, and the
+// only thing that writes it back is a click. Neither side of that contract is checkable at
+// runtime here — the panel would simply forget again, silently — so it is pinned as text.
+describe('webview: main.js honours the remembered section state', () => {
+  const main = fs.readFileSync(
+    path.join(__dirname, '..', 'webview', 'main.js'), 'utf8');
+
+  it('seeds its initial state from the rendered aria-expanded', () => {
+    expect(main).toMatch(/getAttribute\('aria-expanded'\)/);
+  });
+
+  it('posts the section state back to the host under the names it accepts', () => {
+    expect(main).toContain("type: 'setPanelSection'");
+    expect(main).toContain("rememberSection('activity'");
+    expect(main).toContain("rememberSection('history'");
   });
 });

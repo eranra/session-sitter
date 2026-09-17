@@ -58,6 +58,22 @@ const PANEL_REPAINT_MS = 15_000;
 /** Key under which the last-viewed timestamps live in the extension's global state. */
 export const LAST_VIEWED_KEY = 'sessionSitter.lastViewed';
 
+/** Key under which the panel's collapsible sections remember whether they were open. */
+export const PANEL_SECTIONS_KEY = 'sessionSitter.panelSections';
+
+/** The panel's collapsible sections, by the id their toggle and panel share in the markup. */
+const PANEL_SECTIONS = ['activity', 'history'] as const;
+type PanelSection = typeof PANEL_SECTIONS[number];
+
+/**
+ * Which sections the panel opens with.
+ *
+ * Supervision activity starts open because a supervisor you cannot see deciding things for you is
+ * the whole point of the feed; History starts closed because it is fifty rows you did not ask
+ * for. Both are only the *first* answer — after that the panel reopens however you last left it.
+ */
+const DEFAULT_PANEL_SECTIONS: Record<PanelSection, boolean> = { activity: true, history: false };
+
 /**
  * How the panel learns about a live pending approval or question.
  *
@@ -352,6 +368,10 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
           }
           case 'closeHistory': {
             this._historyOpen = false;
+            break;
+          }
+          case 'setPanelSection': {
+            await this._setPanelSection(message.section, message.open);
             break;
           }
           case 'addFromHistory': {
@@ -853,6 +873,41 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
     if (this._historyOpen) { await this._pushHistory(); }
   }
 
+  /**
+   * Which sections the panel should render open, as the user last left them.
+   *
+   * Kept in global state rather than in the webview's own `setState` so that it is one answer for
+   * every window: the panel is the same worklist wherever you open it, and collapsing the feed in
+   * one window only to meet it expanded in the next is the same annoyance in slower motion.
+   *
+   * Read defensively per key. The value is a hand-editable blob in global storage, and a section
+   * missing from it is the normal case — it has simply never been toggled.
+   */
+  private _panelSections(): Record<PanelSection, boolean> {
+    const stored = this._memento?.get<unknown>(PANEL_SECTIONS_KEY, undefined);
+    const record = (stored && typeof stored === 'object') ? stored as Record<string, unknown> : {};
+    const sections = { ...DEFAULT_PANEL_SECTIONS };
+    for (const section of PANEL_SECTIONS) {
+      if (typeof record[section] === 'boolean') { sections[section] = record[section] as boolean; }
+    }
+    return sections;
+  }
+
+  /** Remember that a section was just opened or collapsed, so the next open matches. */
+  private async _setPanelSection(section: unknown, open: unknown): Promise<void> {
+    if (!this._memento) { return; }
+    if (typeof section !== 'string' || typeof open !== 'boolean') { return; }
+    if (!(PANEL_SECTIONS as readonly string[]).includes(section)) { return; }
+    const stored = this._memento.get<unknown>(PANEL_SECTIONS_KEY, undefined);
+    const next = (stored && typeof stored === 'object') ? { ...stored as object } : {};
+    try {
+      await this._memento.update(PANEL_SECTIONS_KEY, { ...next, [section]: open });
+    } catch (err) {
+      // Forgetting a collapsed section is cosmetic. Never let it break the click.
+      this._log(`could not record panel section ${section}: ${String(err)}`);
+    }
+  }
+
   /** The order the user picked for the session list. */
   private _sessionSort(): SessionSortMode {
     return toSessionSortMode(
@@ -1103,6 +1158,13 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
 
     const buildDisplay = BUILD_TIME.replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
 
+    // Baked into the markup rather than applied by main.js on load: the panel would otherwise
+    // arrive expanded and visibly snap shut, which for the tall activity feed is the whole flicker
+    // the remembered state exists to stop. `▼` open, `▶` collapsed — main.js keeps them in step.
+    const sections = this._panelSections();
+    const arrow = (open: boolean) => open ? '&#x25BC;' : '&#x25B6;';
+    const panelHidden = (open: boolean) => open ? '' : ' hidden';
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1126,10 +1188,10 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
               aria-label="New Bob session">+B</button>
     </div>
     <div id="tab-strip" role="tablist" aria-label="Agent sessions"></div>
-    <button id="history-toggle" aria-expanded="false">History &#x25B6;</button>
-    <div id="history-panel" hidden></div>
-    <button id="activity-toggle" aria-expanded="true">Supervision activity &#x25BC;</button>
-    <div id="activity-panel" aria-live="polite"></div>
+    <button id="history-toggle" aria-expanded="${sections.history}">History ${arrow(sections.history)}</button>
+    <div id="history-panel"${panelHidden(sections.history)}></div>
+    <button id="activity-toggle" aria-expanded="${sections.activity}">Supervision activity ${arrow(sections.activity)}</button>
+    <div id="activity-panel" aria-live="polite"${panelHidden(sections.activity)}></div>
   </div>
   <div id="about-box" role="dialog" aria-modal="true" aria-labelledby="about-title" hidden>
     <div class="about-name" id="about-title">Session Sitter</div>

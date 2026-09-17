@@ -5,6 +5,22 @@ single name — **Session Sitter** — and `ci/check-naming.sh` enforces that.
 
 ## Unreleased
 
+### The panel reopens the sections you left open
+
+Supervision activity arrived expanded on every single open, however many times you had collapsed
+it — the section state was hardcoded in two places (`aria-expanded="true"` in the rendered markup,
+`activityOpen = true` in `main.js`) and nothing wrote it down. On a tall feed that is most of the
+panel, so every open began by collapsing it again.
+
+Both sections now remember. The state lives in the extension's global state, under
+`sessionSitter.panelSections`, next to the last-viewed stamps — so it is one answer for every
+window rather than per webview, and collapsing the feed in one window is not undone by the next.
+It is baked into the markup the host renders rather than applied by a script after load, which is
+what keeps the panel from visibly expanding and then snapping shut. `main.js` seeds itself from
+that markup and only writes back on an actual click, so restoring a state can never reset it. A
+History left open still loads its rows, because the restore runs through the same setter a click
+does. First-ever open is unchanged: activity open, history closed.
+
 ### Clicking a Codex session opens Codex again
 
 A click on a Codex row did nothing at all — no tab came forward, no error, nothing in the log. The

@@ -5,6 +5,25 @@ single name — **Session Sitter** — and `ci/check-naming.sh` enforces that.
 
 ## Unreleased
 
+### Clicking a Codex session opens Codex again
+
+A click on a Codex row did nothing at all — no tab came forward, no error, nothing in the log. The
+panel was asking VS Code to reveal `workbench.view.extension.openai-chatgpt`, a container id built
+out of the extension's *identifier* (`openai.chatgpt`) rather than out of anything the extension
+contributes. It contributes two containers, gated on a `when` clause so that only one exists in a
+given window: `codexSecondaryViewContainer` in the secondary side bar from VS Code 1.106, and
+`codexViewContainer` in the activity bar before it. Neither has ever been called `openai-chatgpt`.
+That id was a guess written down as a guess, and the note saying to verify it against the installed
+extension was never acted on.
+
+VS Code rejects a command it does not know, and the call was fire-and-forget — `void
+executeCommand(...)` — so the rejection was dropped and the click was indistinguishable from a click
+on nothing. Now the panel asks Codex to focus itself, through the `chatgpt.openSidebar` command the
+extension registers for exactly this, and falls back to walking the container and then the view by
+id — the same two commands, in the same order, that Codex's own focus routine uses — for a build
+that predates it. Both paths log what went wrong instead of swallowing it, because a panel that
+lists four harnesses will legitimately be asked to focus one that is not installed.
+
 ### Sessions on a VS Code remote window are visible again
 
 Cross-machine sessions worked from Bob and showed nothing from a plain VS Code, which made the

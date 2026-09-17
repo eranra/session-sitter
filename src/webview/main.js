@@ -14,6 +14,9 @@
   /** @type {Array<{sessionId: string, projectName: string, title: string, updatedAt: string, status: string}>} */
   let historySessions = [];
 
+  // Both sections' initial open/closed state comes from the markup the host rendered — it holds
+  // what you last left them at. Seeded in init() from the toggle's aria-expanded; the values here
+  // only matter for the moment before that, and match the host's own defaults.
   let historyOpen = false;
 
   /** @type {string | null} — the session the host reports you are currently in, or null */
@@ -1020,6 +1023,16 @@
     activityItems.forEach(function (item) { activityPanel.appendChild(buildActivityItem(item)); });
   }
 
+  /**
+   * Tell the host a section was just opened or collapsed, so it reopens that way.
+   *
+   * Called from the click handlers only, never from the state restored at load — writing the
+   * remembered value back while applying it is how a restore turns into a reset.
+   */
+  function rememberSection(section, open) {
+    vscodeApi.postMessage({ type: 'setPanelSection', section: section, open: open });
+  }
+
   function setActivityOpen(open) {
     activityOpen = open;
     if (!activityToggle || !activityPanel) { return; }
@@ -1145,15 +1158,24 @@
 
     if (historyToggle) {
       historyToggle.addEventListener('click', () => {
-        setHistoryOpen(!historyOpen);
+        const open = !historyOpen;
+        rememberSection('history', open);
+        setHistoryOpen(open);
       });
     }
 
     if (activityToggle) {
       activityToggle.addEventListener('click', () => {
-        setActivityOpen(!activityOpen);
+        const open = !activityOpen;
+        rememberSection('activity', open);
+        setActivityOpen(open);
       });
     }
+
+    // Adopt what the host rendered. Run through the same setters a click uses, so an open section
+    // also asks for its rows — a restored-open History that never loaded would just look empty.
+    if (historyToggle) { setHistoryOpen(historyToggle.getAttribute('aria-expanded') === 'true'); }
+    if (activityToggle) { setActivityOpen(activityToggle.getAttribute('aria-expanded') === 'true'); }
     renderActivity();
 
     // The hamburger menu (About + Settings…) lives in its own small module. It cannot call

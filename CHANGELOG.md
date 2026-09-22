@@ -5,6 +5,19 @@ single name — **Session Sitter** — and `ci/check-naming.sh` enforces that.
 
 ## Unreleased
 
+### Supervision activity starts collapsed, like History
+
+Remembering the sections (below) fixed the panel undoing your collapse, but a first open — a fresh
+install, a new machine, a cleared global state — still arrived with the supervision feed expanded,
+and that feed is tall enough to push the session list off the bottom of the panel. The list is what
+the panel is for, so both sections now start closed and `DEFAULT_PANEL_SECTIONS` is
+`{ activity: false, history: false }`.
+
+The cost is real and small: nothing on a collapsed header tells you the feed has new decisions in
+it, so this trades a free glance at recent supervisor activity for a panel that opens on the
+worklist. The feed is one click away, and that click is still remembered — leave it open and it
+stays open.
+
 ### The panel reopens the sections you left open
 
 Supervision activity arrived expanded on every single open, however many times you had collapsed

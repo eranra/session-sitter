@@ -1763,17 +1763,17 @@ describe('remembered panel sections', () => {
     return html.slice(start, end);
   }
 
-  it('renders both sections at their defaults when nothing is remembered', () => {
+  it('renders both sections collapsed when nothing is remembered', () => {
     const { html } = resolveWebview(makeProvider([], {}, { memento: makeMemento().memento }));
-    expect(section(html, 'activity')).toContain('aria-expanded="true"');
-    expect(section(html, 'activity')).not.toContain('hidden');
+    expect(section(html, 'activity')).toContain('aria-expanded="false"');
+    expect(section(html, 'activity')).toContain('hidden');
     expect(section(html, 'history')).toContain('aria-expanded="false"');
     expect(section(html, 'history')).toContain('hidden');
   });
 
   it('renders the defaults with no memento at all', () => {
     const { html } = resolveWebview(makeProvider());
-    expect(section(html, 'activity')).toContain('aria-expanded="true"');
+    expect(section(html, 'activity')).toContain('aria-expanded="false"');
     expect(section(html, 'history')).toContain('aria-expanded="false"');
   });
 
@@ -1788,6 +1788,15 @@ describe('remembered panel sections', () => {
     expect(activity).not.toContain('&#x25BC;');
   });
 
+  it('renders Supervision activity expanded when it was last left expanded', () => {
+    const { memento } = makeMemento({}, { [PANEL_SECTIONS_KEY]: { activity: true } });
+    const { html } = resolveWebview(makeProvider([], {}, { memento }));
+    const activity = section(html, 'activity');
+    expect(activity).toContain('aria-expanded="true"');
+    expect(activity).not.toContain('hidden');
+    expect(activity).toContain('&#x25BC;');
+  });
+
   it('renders History expanded when it was last left expanded', () => {
     const { memento } = makeMemento({}, { [PANEL_SECTIONS_KEY]: { history: true } });
     const { html } = resolveWebview(makeProvider([], {}, { memento }));
@@ -1800,7 +1809,7 @@ describe('remembered panel sections', () => {
   it('falls back to the defaults for a remembered value of the wrong shape', () => {
     const { memento } = makeMemento({}, { [PANEL_SECTIONS_KEY]: 'nonsense' });
     const { html } = resolveWebview(makeProvider([], {}, { memento }));
-    expect(section(html, 'activity')).toContain('aria-expanded="true"');
+    expect(section(html, 'activity')).toContain('aria-expanded="false"');
     expect(section(html, 'history')).toContain('aria-expanded="false"');
   });
 
@@ -1859,5 +1868,12 @@ describe('webview: main.js honours the remembered section state', () => {
     expect(main).toContain("type: 'setPanelSection'");
     expect(main).toContain("rememberSection('activity'");
     expect(main).toContain("rememberSection('history'");
+  });
+
+  // The seeds only govern the moment before init() reads the markup, but they claim in a comment
+  // to match the host's defaults — and a stale claim about section state is how this drifted once.
+  it('seeds both sections closed, as the host now renders them', () => {
+    expect(main).toContain('let historyOpen = false;');
+    expect(main).toContain('let activityOpen = false;');
   });
 });

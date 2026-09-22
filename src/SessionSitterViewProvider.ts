@@ -68,11 +68,13 @@ type PanelSection = typeof PANEL_SECTIONS[number];
 /**
  * Which sections the panel opens with.
  *
- * Supervision activity starts open because a supervisor you cannot see deciding things for you is
- * the whole point of the feed; History starts closed because it is fifty rows you did not ask
- * for. Both are only the *first* answer — after that the panel reopens however you last left it.
+ * Both start closed. The panel's job on open is the session list, and either section expanded
+ * pushes that list off the bottom — the supervision feed worst of all, because it is the tall one.
+ * Nothing on a collapsed header says the feed has anything new in it, so this does trade a glance
+ * at recent supervisor decisions for a panel that opens on what it is for; the feed is one click
+ * away, and this is only the *first* answer — after that the panel reopens however you left it.
  */
-const DEFAULT_PANEL_SECTIONS: Record<PanelSection, boolean> = { activity: true, history: false };
+const DEFAULT_PANEL_SECTIONS: Record<PanelSection, boolean> = { activity: false, history: false };
 
 /**
  * How the panel learns about a live pending approval or question.

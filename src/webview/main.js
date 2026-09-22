@@ -33,7 +33,7 @@
 
   /** @type {Array<object>} — supervision activity feed (newest first) */
   let activityItems = [];
-  let activityOpen = true;
+  let activityOpen = false;
 
   /** @type {string} — where decision cards go; 'stub' (a file) unless the host says otherwise */
   let messagingChannel = 'stub';

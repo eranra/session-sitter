@@ -5,7 +5,7 @@ import * as os from 'os';
 import { execFile } from 'child_process';
 import { randomBytes } from 'crypto';
 import { SessionManager, ClaudeSession, MessageExchange } from './SessionManager';
-import { readLiveWindows, writeWindowEntry, removeWindowEntry, discoverOwnIpcSocket, detectIdeCli, isAttendedWindow, type WindowEntry } from './WindowRegistry';
+import { readLiveWindows, writeWindowEntry, removeWindowEntry, discoverOwnIpcSocket, discoverOwnIpcSocketDarwin, detectIdeCli, isAttendedWindow, type WindowEntry } from './WindowRegistry';
 import { getOpenBobTaskIds } from './agents/BobInspector';
 import { getOpenClaudeSessionIds, revealClaudeSessionInSidebar } from './agents/ClaudeInspector';
 import { BUILD_TIME, BUILD_VERSION } from './buildInfo';
@@ -253,7 +253,9 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
       pid: process.pid,
       workspaceFolders: folders,
       ideCli: detectIdeCli(undefined, vscode.env.appName),
-      ipcSocket: discoverOwnIpcSocket() ?? process.env.VSCODE_IPC_HOOK_CLI ?? '',
+      ipcSocket: discoverOwnIpcSocket()
+        ?? (process.platform === 'darwin' ? discoverOwnIpcSocketDarwin() : null)
+        ?? process.env.VSCODE_IPC_HOOK_CLI ?? '',
       openBobTaskIds: await getOpenBobTaskIds(this._log),
       openClaudeSessionIds: (await getOpenClaudeSessionIds(this._log)).open,
       updatedAt: Date.now(),

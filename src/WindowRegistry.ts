@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import { randomBytes } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -92,6 +93,44 @@ export function discoverOwnIpcSocket(
     if (!m) { continue; }
     if (pid === selfPid || isDescendantOf(pid, selfPid, proc)) {
       return m.slice('VSCODE_IPC_HOOK_CLI='.length);
+    }
+  }
+  return null;
+}
+
+// A VS Code CLI IPC hook socket, wherever it sits directly under /tmp: `<app name>-<uuid>.sock`.
+// The full UUID suffix is what tells it apart from every *other* socket this same process holds —
+// `vscode-git-<10 hex>.sock` (a shorter hash, no dashes in that shape), a bare `mcp.sock`, Codex's
+// own `ipc.sock` — none of which end in one, so nothing else here is ever mistaken for it.
+const IPC_HOOK_SOCKET_RE = /^\/tmp\/.+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sock$/i;
+
+/**
+ * `discoverOwnIpcSocket`'s counterpart for platforms with no `/proc` (macOS today; the same
+ * approach would cover Windows, but named sockets there don't sit under a scannable directory the
+ * same way and this has not been tried).
+ *
+ * The reason that function exists at all — the extension host's own `process.env` does not
+ * reliably carry `VSCODE_IPC_HOOK_CLI` — holds here too, so the `??` fallback in
+ * `_publishWindowEntry` was silently landing on `''` on every Mac, which is what made focusing a
+ * session in *another* window fail outright (`ipcSocket` empty → `_tryFocusForeignWindow` returns
+ * `'foreign-failed'` before ever trying). But unlike Linux, nothing needs scanning a descendant
+ * process for this: VS Code's CLI IPC hook is a plain socket file the host holds open on *itself*
+ * to listen for CLI connections, and `lsof -p <pid>` lists every fd a process holds, itself
+ * included — confirmed against a real window on this machine, whose discovered socket did focus
+ * that exact window via `code --reuse-window`.
+ */
+export function discoverOwnIpcSocketDarwin(
+  selfPid: number = process.pid,
+  listOpenFiles: (pid: number) => string = (pid) => {
+    try { return execFileSync('/usr/sbin/lsof', ['-p', String(pid), '-Fn'], { encoding: 'utf8' }); }
+    catch { return ''; }
+  },
+): string | null {
+  for (const line of listOpenFiles(selfPid).split('\n')) {
+    // `-Fn` prints one open file per line as `n<path>`; matching from index 1 so a socket path
+    // that itself started with the letter 'n' could never register as the wrong field.
+    if (line.startsWith('n') && IPC_HOOK_SOCKET_RE.test(line.slice(1))) {
+      return line.slice(1);
     }
   }
   return null;

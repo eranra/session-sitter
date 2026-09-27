@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  detectIdeCli, discoverOwnIpcSocket, isAttendedWindow, type ProcFs,
+  detectIdeCli, discoverOwnIpcSocket, discoverOwnIpcSocketDarwin, isAttendedWindow, type ProcFs,
   writeWindowEntry, readLiveWindows, removeWindowEntry, windowsDir, type WindowEntry,
 } from '../WindowRegistry';
 
@@ -60,6 +60,53 @@ describe('discoverOwnIpcSocket', () => {
   it('returns null when no descendant carries the var', () => {
     const proc = fakeProc({ 200: { ppid: 1 }, 300: { ppid: 200, environ: 'PATH=/x\0' } });
     expect(discoverOwnIpcSocket(200, proc)).toBeNull();
+  });
+});
+
+describe('discoverOwnIpcSocketDarwin', () => {
+  // A real `lsof -p <pid> -Fn` capture, trimmed to the lines that matter: the fd type marker
+  // lines ('f...') are not filtered on, only the 'n<path>' lines, exactly as they came back from
+  // the window this was diagnosed against.
+  const LSOF_FN = [
+    'p4835',
+    'fcwd',
+    'n/',
+    'ftxt',
+    'n/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app',
+    'f32u',
+    'n/var/folders/bd/T/vscode-git-9e331873c6.sock',
+    'f63u',
+    'n/var/folders/bd/T/mcp-H9LuZ5/mcp.sock',
+    'f76u',
+    'n/tmp/Visual Studio Code-e5642e1a-ed12-4f3e-86f0-021d0bc7c468.sock',
+  ].join('\n');
+
+  it('finds the IPC hook socket among everything else the process holds open', () => {
+    const listOpenFiles = vi.fn().mockReturnValue(LSOF_FN);
+    expect(discoverOwnIpcSocketDarwin(4835, listOpenFiles)).toBe(
+      '/tmp/Visual Studio Code-e5642e1a-ed12-4f3e-86f0-021d0bc7c468.sock',
+    );
+    expect(listOpenFiles).toHaveBeenCalledWith(4835);
+  });
+
+  it('is not fooled by the other sockets the same process holds', () => {
+    // Same fixture minus the real IPC socket line: vscode-git's shorter hash and the bare
+    // mcp.sock must not match the UUID-suffix pattern.
+    const withoutRealSocket = LSOF_FN.split('\n')
+      .filter(l => !l.includes('Visual Studio Code-e5642e1a'))
+      .join('\n');
+    expect(discoverOwnIpcSocketDarwin(4835, () => withoutRealSocket)).toBeNull();
+  });
+
+  it("ignores Codex's own ipc.sock, which has no UUID suffix either", () => {
+    const lines = `${LSOF_FN}\nn/Users/u/.codex/ipc/ipc.sock`;
+    expect(discoverOwnIpcSocketDarwin(4835, () => lines)).toBe(
+      '/tmp/Visual Studio Code-e5642e1a-ed12-4f3e-86f0-021d0bc7c468.sock',
+    );
+  });
+
+  it('returns null when lsof itself fails', () => {
+    expect(discoverOwnIpcSocketDarwin(4835, () => '')).toBeNull();
   });
 });
 

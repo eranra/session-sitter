@@ -38,11 +38,13 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.detectIdeCli = detectIdeCli;
 exports.discoverOwnIpcSocket = discoverOwnIpcSocket;
+exports.discoverOwnIpcSocketDarwin = discoverOwnIpcSocketDarwin;
 exports.isAttendedWindow = isAttendedWindow;
 exports.windowsDir = windowsDir;
 exports.writeWindowEntry = writeWindowEntry;
 exports.removeWindowEntry = removeWindowEntry;
 exports.readLiveWindows = readLiveWindows;
+const child_process_1 = require("child_process");
 const crypto_1 = require("crypto");
 const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
@@ -119,6 +121,43 @@ function discoverOwnIpcSocket(selfPid = process.pid, proc = realProcFs) {
         }
         if (pid === selfPid || isDescendantOf(pid, selfPid, proc)) {
             return m.slice('VSCODE_IPC_HOOK_CLI='.length);
+        }
+    }
+    return null;
+}
+// A VS Code CLI IPC hook socket, wherever it sits directly under /tmp: `<app name>-<uuid>.sock`.
+// The full UUID suffix is what tells it apart from every *other* socket this same process holds —
+// `vscode-git-<10 hex>.sock` (a shorter hash, no dashes in that shape), a bare `mcp.sock`, Codex's
+// own `ipc.sock` — none of which end in one, so nothing else here is ever mistaken for it.
+const IPC_HOOK_SOCKET_RE = /^\/tmp\/.+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.sock$/i;
+/**
+ * `discoverOwnIpcSocket`'s counterpart for platforms with no `/proc` (macOS today; the same
+ * approach would cover Windows, but named sockets there don't sit under a scannable directory the
+ * same way and this has not been tried).
+ *
+ * The reason that function exists at all — the extension host's own `process.env` does not
+ * reliably carry `VSCODE_IPC_HOOK_CLI` — holds here too, so the `??` fallback in
+ * `_publishWindowEntry` was silently landing on `''` on every Mac, which is what made focusing a
+ * session in *another* window fail outright (`ipcSocket` empty → `_tryFocusForeignWindow` returns
+ * `'foreign-failed'` before ever trying). But unlike Linux, nothing needs scanning a descendant
+ * process for this: VS Code's CLI IPC hook is a plain socket file the host holds open on *itself*
+ * to listen for CLI connections, and `lsof -p <pid>` lists every fd a process holds, itself
+ * included — confirmed against a real window on this machine, whose discovered socket did focus
+ * that exact window via `code --reuse-window`.
+ */
+function discoverOwnIpcSocketDarwin(selfPid = process.pid, listOpenFiles = (pid) => {
+    try {
+        return (0, child_process_1.execFileSync)('/usr/sbin/lsof', ['-p', String(pid), '-Fn'], { encoding: 'utf8' });
+    }
+    catch {
+        return '';
+    }
+}) {
+    for (const line of listOpenFiles(selfPid).split('\n')) {
+        // `-Fn` prints one open file per line as `n<path>`; matching from index 1 so a socket path
+        // that itself started with the letter 'n' could never register as the wrong field.
+        if (line.startsWith('n') && IPC_HOOK_SOCKET_RE.test(line.slice(1))) {
+            return line.slice(1);
         }
     }
     return null;

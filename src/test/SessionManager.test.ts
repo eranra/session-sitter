@@ -1080,6 +1080,22 @@ describe('SessionManager._scanChatSessions', () => {
     });
   });
 
+  it('uses customTitle over the first message when the chat was renamed', async () => {
+    const chatFile = path.join(chatDir, 'sess-renamed.jsonl');
+    await fs.promises.writeFile(chatFile, JSON.stringify({
+      kind: 0,
+      v: {
+        sessionId: 'sess-renamed',
+        customTitle: 'Renamed chat',
+        requests: [{ message: { text: 'How do I compile this project?' } }],
+      },
+    }) + '\n');
+
+    const results = await (sm as unknown as PrivateManagerChat)._scanChatSessions();
+    expect(results).toHaveLength(1);
+    expect(results[0].title).toBe('Renamed chat');
+  });
+
   it("falls back to 'Chat in <basename>' when requests is empty", async () => {
     const chatFile = path.join(chatDir, 'sess-2.jsonl');
     await fs.promises.writeFile(chatFile, JSON.stringify({

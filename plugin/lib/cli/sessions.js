@@ -73,7 +73,7 @@ const daemonHeartbeat_1 = require("../daemonHeartbeat");
 async function collectSessions(opts = {}) {
     const paths = opts.paths ?? (0, sessionScan_1.defaultStorePaths)();
     const sessions = [
-        ...(await (0, sessionScan_1.scanClaudeSessions)(paths.projectsDir)),
+        ...(await (0, sessionScan_1.scanClaudeSessions)(paths.projectsDir, new Map(), new Map(), paths.vscodeUserDir)),
         ...(await (0, sessionScan_1.scanBobSessions)(paths.bobDbPath)),
         ...(await (0, sessionScan_1.scanCodexSessions)(paths.codexSessionsDir, paths.codexIndexPath)),
         ...(await (0, sessionScan_1.scanChatSessions)(paths.vscodeUserDir)),

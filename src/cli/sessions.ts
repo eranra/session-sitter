@@ -97,7 +97,7 @@ export interface Worklist {
 export async function collectSessions(opts: CollectOptions = {}): Promise<Worklist> {
   const paths = opts.paths ?? defaultStorePaths();
   const sessions = [
-    ...(await scanClaudeSessions(paths.projectsDir)),
+    ...(await scanClaudeSessions(paths.projectsDir, new Map(), new Map(), paths.vscodeUserDir)),
     ...(await scanBobSessions(paths.bobDbPath)),
     ...(await scanCodexSessions(paths.codexSessionsDir, paths.codexIndexPath)),
     ...(await scanChatSessions(paths.vscodeUserDir)),

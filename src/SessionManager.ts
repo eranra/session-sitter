@@ -816,7 +816,7 @@ export class SessionManager implements vscode.Disposable {
   private _scanClaudeSessions(
     filePaths: Map<string, string> = new Map(), sources: Map<string, SessionSourceId> = new Map(),
   ): Promise<ClaudeSession[]> {
-    return scanClaudeSessions(this._projectsDir, filePaths, sources);
+    return scanClaudeSessions(this._projectsDir, filePaths, sources, this._vscodeUserDir);
   }
 
   private _scanBobSessions(

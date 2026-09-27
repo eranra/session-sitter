@@ -57,6 +57,7 @@ exports.liveSessionPids = liveSessionPids;
 exports.getActiveSessionIds = getActiveSessionIds;
 exports.defaultStorePaths = defaultStorePaths;
 exports.scanClaudeSessions = scanClaudeSessions;
+exports.readClaudeCodeTitleOverrides = readClaudeCodeTitleOverrides;
 exports.scanBobSessions = scanBobSessions;
 exports.scanCodexSessions = scanCodexSessions;
 exports.scanChatSessions = scanChatSessions;
@@ -235,7 +236,10 @@ function defaultStorePaths(homedir = os.homedir(), env = process.env) {
 async function scanClaudeSessions(projectsDir, 
 // Defaulted so each scanner is independently callable (unit tests drive them one at a
 // time); `_scanSessions` always passes the maps it will swap in atomically.
-filePaths = new Map(), sources = new Map()) {
+filePaths = new Map(), sources = new Map(), 
+// VS Code's `User` dir. Optional — passing it turns on the rename-override lookup below;
+// omitting it (as most tests do) leaves every session's title exactly what the transcript says.
+vscodeUserDir) {
     const sessions = [];
     const jsonlFiles = await findJsonlFiles(projectsDir);
     for (const filePath of jsonlFiles) {
@@ -251,7 +255,91 @@ filePaths = new Map(), sources = new Map()) {
             // Silently skip files that fail to parse
         }
     }
+    // A rename typed into the Claude Code panel's tab never touches the transcript — VS Code keeps
+    // it in the workspace's own `state.vscdb` instead — so the transcript's `ai-title` (or first
+    // message) is stale the moment the user renames. Apply the override last, after every session's
+    // base title is already set, so a session with no override keeps exactly what it had before.
+    if (vscodeUserDir) {
+        const overrides = await readClaudeCodeTitleOverrides(vscodeUserDir);
+        for (const session of sessions) {
+            const override = overrides.get(session.sessionId);
+            if (override) {
+                session.title = override;
+            }
+        }
+    }
     return sessions;
+}
+/** Read one key's value out of a VS Code workspace `state.vscdb`. Swapped out in tests. */
+async function readWorkspaceStateValue(dbPath, key) {
+    // Copy before reading, same as `PeerDiscovery`'s state-db reader: VS Code holds this file open,
+    // and reading it in place can fail on a lock or a WAL the reader cannot follow.
+    const tmp = path.join(os.tmpdir(), `ss-wsstate-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.vscdb`);
+    await fs.promises.copyFile(dbPath, tmp);
+    try {
+        const rows = await (0, BobDatabase_1.queryBobDb)(tmp, 'SELECT value FROM ItemTable WHERE key = ?', [key]);
+        return rows[0]?.value;
+    }
+    finally {
+        try {
+            await fs.promises.unlink(tmp);
+        }
+        catch { /* best effort */ }
+    }
+}
+/**
+ * User renames of a Claude Code panel tab, keyed by session id.
+ *
+ * The Claude Code extension keeps the label it shows on the tab — including a user rename, which
+ * VS Code's own UI still reflects — under the `Anthropic.claude-code` key of the *workspace's*
+ * `state.vscdb` (`{"panelTabSessions":[{"sessionId":...,"title":...}, ...]}`), not in the
+ * transcript. Every workspace this user has opened gets its own `state.vscdb`, hence the walk over
+ * `workspaceStorage/<hash>/`, mirroring how `scanChatSessions` already locates Chat's per-workspace
+ * store.
+ *
+ * A workspace that cannot be read (never opened the panel, locked db, malformed value) is skipped
+ * rather than fatal, so one bad workspace cannot hide renames recorded in the others.
+ */
+async function readClaudeCodeTitleOverrides(userDir, readStateValue = readWorkspaceStateValue) {
+    const overrides = new Map();
+    const wsRoot = path.join(userDir, 'workspaceStorage');
+    let hashes;
+    try {
+        hashes = (await fs.promises.readdir(wsRoot, { withFileTypes: true }))
+            .filter(e => e.isDirectory()).map(e => e.name);
+    }
+    catch {
+        return overrides;
+    }
+    for (const hash of hashes) {
+        const dbPath = path.join(wsRoot, hash, 'state.vscdb');
+        let raw;
+        try {
+            if (!(await fs.promises.stat(dbPath)).isFile()) {
+                continue;
+            }
+            raw = await readStateValue(dbPath, 'Anthropic.claude-code');
+        }
+        catch {
+            continue;
+        }
+        if (!raw) {
+            continue;
+        }
+        try {
+            const parsed = JSON.parse(raw);
+            for (const tab of parsed.panelTabSessions ?? []) {
+                const title = tab.title?.trim();
+                if (tab.sessionId && title) {
+                    overrides.set(tab.sessionId, title);
+                }
+            }
+        }
+        catch {
+            // Malformed value — skip this workspace's overrides, keep the others.
+        }
+    }
+    return overrides;
 }
 async function scanBobSessions(bobDbPath, 
 // Defaulted so each scanner is independently callable (unit tests drive them one at a
@@ -391,10 +479,14 @@ filePaths = new Map(), sources = new Map()) {
                 if (!sessionId) {
                     continue;
                 }
+                // `customTitle` is VS Code's own record of a user rename — set the moment the chat tab is
+                // renamed — and takes priority over the first message, the same way Claude's `ai-title`
+                // takes priority over its own first message below.
+                const customTitle = rec.v?.customTitle?.trim();
                 const firstText = rec.v?.requests?.[0]?.message?.text?.trim();
-                const title = (firstText && firstText.length > 0
-                    ? firstText
-                    : `Chat in ${projectName}`).slice(0, 60);
+                const title = (customTitle && customTitle.length > 0
+                    ? customTitle
+                    : (firstText && firstText.length > 0 ? firstText : `Chat in ${projectName}`)).slice(0, 60);
                 const stat = await fs.promises.stat(filePath);
                 filePaths.set(sessionId, filePath);
                 sources.set(sessionId, 'chat');

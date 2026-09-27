@@ -51,10 +51,31 @@ const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const paths_1 = require("./hooks/paths");
 const HELPER_NAMES = new Set(['helpers']);
+/**
+ * Where the desktop `code` CLI script sits relative to `vscode.env.appRoot`
+ * (`<install>/resources/app` on every desktop platform), keyed by `process.platform`.
+ *
+ * Mac ships it *inside* that folder (`resources/app/bin/code`); Windows and Linux ship it as a
+ * sibling of `resources/` under the install root (`<install>/bin/code[.cmd]`), two levels up from
+ * `appRoot`. Confirmed against a real install: `resources/app/bin/code` exists on this Mac and,
+ * run with `VSCODE_IPC_HOOK_CLI` set to a target window's socket, focuses that exact window —
+ * without touching `PATH` at all.
+ */
+function desktopCliCandidate(appRoot, platform) {
+    if (platform === 'darwin') {
+        return path.join(appRoot, 'bin', 'code');
+    }
+    const cliName = platform === 'win32' ? 'code.cmd' : 'code';
+    return path.join(appRoot, '..', '..', 'bin', cliName);
+}
 // Determine the CLI used to focus a window. On remote IDEs the launcher lives in
 // <serverBin>/bin/remote-cli/ next to the node execPath (Bob → "bobide", VS Code → "code").
-// Returns an absolute path when found, else a bare name resolved via PATH.
-function detectIdeCli(execPath = process.execPath, appName = '', readdir = fs.readdirSync) {
+// For a local desktop install, resolved to an absolute path under `appRoot`
+// (`vscode.env.appRoot`) so this doesn't depend on the `code` shell command being on `PATH` —
+// it commonly isn't for a GUI-launched app, even when the "Install 'code' command" step has
+// been run, and there's no shell profile involved at all when it hasn't.
+// Falls back to a bare name resolved via PATH only when neither of those layouts is found.
+function detectIdeCli(execPath = process.execPath, appName = '', readdir = fs.readdirSync, appRoot, existsSync = fs.existsSync, platform = process.platform) {
     const cliDir = path.join(path.dirname(execPath), 'bin', 'remote-cli');
     try {
         const exec = readdir(cliDir).find(e => !HELPER_NAMES.has(e) && !e.startsWith('.'));
@@ -65,6 +86,12 @@ function detectIdeCli(execPath = process.execPath, appName = '', readdir = fs.re
     catch { /* not a remote IDE layout */ }
     if (appName.toLowerCase().includes('bob')) {
         return 'bobide';
+    }
+    if (appRoot) {
+        const candidate = desktopCliCandidate(appRoot, platform);
+        if (existsSync(candidate)) {
+            return candidate;
+        }
     }
     return 'code';
 }

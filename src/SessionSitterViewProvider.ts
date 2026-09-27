@@ -252,7 +252,7 @@ export class SessionSitterViewProvider implements vscode.WebviewViewProvider, vs
     await writeWindowEntry({
       pid: process.pid,
       workspaceFolders: folders,
-      ideCli: detectIdeCli(undefined, vscode.env.appName),
+      ideCli: detectIdeCli(undefined, vscode.env.appName, undefined, vscode.env.appRoot),
       ipcSocket: discoverOwnIpcSocket()
         ?? (process.platform === 'darwin' ? discoverOwnIpcSocketDarwin() : null)
         ?? process.env.VSCODE_IPC_HOOK_CLI ?? '',

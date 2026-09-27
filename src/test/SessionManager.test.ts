@@ -111,6 +111,51 @@ describe('SessionManager._parseSessionFile', () => {
     expect(result?.title).toBe('raw first message');
   });
 
+  it('a rename (custom-title) outranks ai-title and the first message', async () => {
+    const file = await writeTempJsonl(tmpDir, 'renamed-over-ai-title', [
+      { type: 'user', cwd: '/p', message: { content: 'raw first message' } },
+      { type: 'ai-title', sessionId: 'renamed-over-ai-title', aiTitle: 'auto-generated title' },
+      { type: 'custom-title', sessionId: 'renamed-over-ai-title', customTitle: 'user chose this' },
+    ]);
+    const result = await manager._parseSessionFile(file);
+    expect(result?.title).toBe('user chose this');
+  });
+
+  it('uses the newest rename when the session was renamed more than once', async () => {
+    const file = await writeTempJsonl(tmpDir, 'renamed-twice', [
+      { type: 'user', cwd: '/p', message: { content: 'raw first message' } },
+      { type: 'custom-title', sessionId: 'renamed-twice', customTitle: 'first rename' },
+      { type: 'custom-title', sessionId: 'renamed-twice', customTitle: 'second rename' },
+    ]);
+    const result = await manager._parseSessionFile(file);
+    expect(result?.title).toBe('second rename');
+  });
+
+  it('ignores a blank rename and falls back to the first message', async () => {
+    const file = await writeTempJsonl(tmpDir, 'blank-rename', [
+      { type: 'user', cwd: '/p', message: { content: 'raw first message' } },
+      { type: 'custom-title', sessionId: 'blank-rename', customTitle: '   ' },
+    ]);
+    const result = await manager._parseSessionFile(file);
+    expect(result?.title).toBe('raw first message');
+  });
+
+  it('finds a rename in the tail even when it falls outside the 256 KB head scan', async () => {
+    // The bug this covers: a session renamed once, early on, that keeps running long enough to
+    // push well past the 256 KB the head scan (firstUserText/ai-title) ever reads. The rename
+    // must still be found — from the tail, not the head — because Claude Code rewrites the
+    // custom-title record on every checkpoint, keeping the newest one near the end of the file.
+    const padding = { type: 'assistant', message: { content: 'x'.repeat(30_000) } };
+    const file = await writeTempJsonl(tmpDir, 'padded-rename', [
+      { type: 'user', cwd: '/p', message: { content: 'raw first message' } },
+      { type: 'ai-title', sessionId: 'padded-rename', aiTitle: 'stale ai title' },
+      ...Array(10).fill(padding),
+      { type: 'custom-title', sessionId: 'padded-rename', customTitle: 'Renamed after a long session' },
+    ]);
+    const result = await manager._parseSessionFile(file);
+    expect(result?.title).toBe('Renamed after a long session');
+  });
+
   it('truncates title to 60 characters', async () => {
     const longMsg = 'A'.repeat(100);
     const file = await writeTempJsonl(tmpDir, 'session-b', [

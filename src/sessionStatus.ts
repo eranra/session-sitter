@@ -144,6 +144,9 @@ export interface JsonlRecord {
   type?: string;
   cwd?: string;
   aiTitle?: string;     // present in ai-title records written by Claude Code
+  // Present in custom-title records: written when a user renames the session from Claude Code's
+  // own UI, and rewritten on every checkpoint after that, not just once — see `sessionScan.ts`.
+  customTitle?: string;
   name?: string;        // bare tool_use records carry the tool name at the top level
   timestamp?: string;
   isMeta?: boolean;     // injected context (skill loads, scheduled prompts), not user typing

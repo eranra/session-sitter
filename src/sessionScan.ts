@@ -649,8 +649,8 @@ export async function parseSessionFile(filePath: string): Promise<ClaudeSession 
   // user message. Read in 16 KB chunks up to 256 KB, collecting:
   //   - firstUserText + projectPath  (from the first user record)
   //   - aiTitle                      (from the ai-title record Claude Code writes)
-  // Use aiTitle as the display title when available — it matches what VS Code
-  // shows in the editor tab — and fall back to the raw first user message.
+  // A user rename (`custom-title`) is read separately, from the tail rather than this forward
+  // scan — see `latestCustomTitle` below for why — and takes priority over both when present.
   const CHUNK_SIZE = 16384;
   const MAX_BYTES  = 262144;
 
@@ -725,7 +725,11 @@ export async function parseSessionFile(filePath: string): Promise<ClaudeSession 
       return null;
     }
 
-    const title = (aiTitle ?? firstUserText).slice(0, 60);
+    // A rename recorded in the transcript itself always outranks Claude's own generated title:
+    // it is what the user explicitly asked for. See `latestCustomTitle` for why this is read from
+    // the tail rather than the forward scan above.
+    const customTitle = latestCustomTitle(await readTailRecords(fh, stat.size));
+    const title = (customTitle ?? aiTitle ?? firstUserText).slice(0, 60);
     const projectName = projectPath ? path.basename(projectPath) : '';
     const status = await readStatus(fh, stat.size, updatedAt);
     // The caller (_scanClaudeSessions) records the id->path/source mapping into the local
@@ -734,6 +738,58 @@ export async function parseSessionFile(filePath: string): Promise<ClaudeSession 
   } finally {
     await fh.close();
   }
+}
+
+/**
+ * Read and parse the tail of a Claude transcript into records.
+ *
+ * Shared by `readStatus` and `parseSessionFile`'s rename lookup — both want the newest few
+ * checkpoint records rather than the whole file, and a transcript can run to many megabytes.
+ */
+async function readTailRecords(
+  fh: Awaited<ReturnType<typeof fs.promises.open>>,
+  fileSize: number,
+): Promise<JsonlRecord[]> {
+  if (fileSize === 0) { return []; }
+
+  const TAIL = 32768; // 32 KB covers large file-history-snapshot records
+  const offset = Math.max(0, fileSize - TAIL);
+  const size = fileSize - offset;
+  const buf = Buffer.alloc(size);
+  const { bytesRead } = await fh.read(buf, 0, size, offset);
+  const chunk = buf.subarray(0, bytesRead).toString('utf8');
+
+  const records: JsonlRecord[] = [];
+  for (const line of chunk.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) { continue; }
+    // The first line of the window is usually a fragment. Skipping unparsable lines is what
+    // makes reading a fixed-size tail safe.
+    try { records.push(JSON.parse(trimmed) as JsonlRecord); } catch { /* partial line */ }
+  }
+  return records;
+}
+
+/**
+ * The newest rename recorded in the transcript's tail, or null when there is none.
+ *
+ * A rename writes `{"type":"custom-title","sessionId":...,"customTitle":...}` — a different
+ * record from `ai-title`, which Claude writes itself for its own generated title. Claude Code
+ * rewrites this record on every checkpoint after a rename, not just once, which is what makes the
+ * tail window reliable here: a rename typed once, early in a long-running session, would otherwise
+ * sit far past the 256 KB the forward scan above ever reads, but the newest rewrite of it tracks
+ * the tail as the session keeps going.
+ */
+function latestCustomTitle(records: JsonlRecord[]): string | null {
+  let title: string | null = null;
+  for (const record of records) {
+    if (record.type === 'custom-title' &&
+        typeof record.customTitle === 'string' &&
+        record.customTitle.trim().length > 0) {
+      title = record.customTitle.trim();
+    }
+  }
+  return title;
 }
 
 /**
@@ -751,22 +807,6 @@ export async function readStatus(
 ): Promise<SessionStatus> {
   // Nothing has been written yet, so there is nothing to claim about it.
   if (fileSize === 0) { return 'dormant'; }
-
-  const TAIL = 32768; // 32 KB covers large file-history-snapshot records
-  const offset = Math.max(0, fileSize - TAIL);
-  const size = fileSize - offset;
-  const buf = Buffer.alloc(size);
-  const { bytesRead } = await fh.read(buf, 0, size, offset);
-  const chunk = buf.subarray(0, bytesRead).toString('utf8');
-
-  const records: JsonlRecord[] = [];
-  for (const line of chunk.split('\n')) {
-    const trimmed = line.trim();
-    if (!trimmed) { continue; }
-    // The first line of the window is usually a fragment. Skipping unparsable lines is what
-    // makes reading a fixed-size tail safe.
-    try { records.push(JSON.parse(trimmed) as JsonlRecord); } catch { /* partial line */ }
-  }
-
+  const records = await readTailRecords(fh, fileSize);
   return claudeStatusFromTail(records, updatedAt.getTime(), Date.now());
 }

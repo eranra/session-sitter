@@ -616,8 +616,8 @@ async function parseSessionFile(filePath) {
     // user message. Read in 16 KB chunks up to 256 KB, collecting:
     //   - firstUserText + projectPath  (from the first user record)
     //   - aiTitle                      (from the ai-title record Claude Code writes)
-    // Use aiTitle as the display title when available — it matches what VS Code
-    // shows in the editor tab — and fall back to the raw first user message.
+    // A user rename (`custom-title`) is read separately, from the tail rather than this forward
+    // scan — see `latestCustomTitle` below for why — and takes priority over both when present.
     const CHUNK_SIZE = 16384;
     const MAX_BYTES = 262144;
     const fh = await fs.promises.open(filePath, 'r');
@@ -688,7 +688,11 @@ async function parseSessionFile(filePath) {
         if (firstUserText === null) {
             return null;
         }
-        const title = (aiTitle ?? firstUserText).slice(0, 60);
+        // A rename recorded in the transcript itself always outranks Claude's own generated title:
+        // it is what the user explicitly asked for. See `latestCustomTitle` for why this is read from
+        // the tail rather than the forward scan above.
+        const customTitle = latestCustomTitle(await readTailRecords(fh, stat.size));
+        const title = (customTitle ?? aiTitle ?? firstUserText).slice(0, 60);
         const projectName = projectPath ? path.basename(projectPath) : '';
         const status = await readStatus(fh, stat.size, updatedAt);
         // The caller (_scanClaudeSessions) records the id->path/source mapping into the local
@@ -700,17 +704,14 @@ async function parseSessionFile(filePath) {
     }
 }
 /**
- * Read the tail of a Claude transcript and hand it to the classifier.
+ * Read and parse the tail of a Claude transcript into records.
  *
- * Split deliberately: this method does the I/O — how much of the file to read, how to survive a
- * partial line at the window's edge — and `claudeStatusFromTail` does the deciding. All six
- * states are then unit-testable without a transcript on disk, and the rules live in one file
- * next to Bob's, instead of buried in a private method here.
+ * Shared by `readStatus` and `parseSessionFile`'s rename lookup — both want the newest few
+ * checkpoint records rather than the whole file, and a transcript can run to many megabytes.
  */
-async function readStatus(fh, fileSize, updatedAt) {
-    // Nothing has been written yet, so there is nothing to claim about it.
+async function readTailRecords(fh, fileSize) {
     if (fileSize === 0) {
-        return 'dormant';
+        return [];
     }
     const TAIL = 32768; // 32 KB covers large file-history-snapshot records
     const offset = Math.max(0, fileSize - TAIL);
@@ -731,5 +732,42 @@ async function readStatus(fh, fileSize, updatedAt) {
         }
         catch { /* partial line */ }
     }
+    return records;
+}
+/**
+ * The newest rename recorded in the transcript's tail, or null when there is none.
+ *
+ * A rename writes `{"type":"custom-title","sessionId":...,"customTitle":...}` — a different
+ * record from `ai-title`, which Claude writes itself for its own generated title. Claude Code
+ * rewrites this record on every checkpoint after a rename, not just once, which is what makes the
+ * tail window reliable here: a rename typed once, early in a long-running session, would otherwise
+ * sit far past the 256 KB the forward scan above ever reads, but the newest rewrite of it tracks
+ * the tail as the session keeps going.
+ */
+function latestCustomTitle(records) {
+    let title = null;
+    for (const record of records) {
+        if (record.type === 'custom-title' &&
+            typeof record.customTitle === 'string' &&
+            record.customTitle.trim().length > 0) {
+            title = record.customTitle.trim();
+        }
+    }
+    return title;
+}
+/**
+ * Read the tail of a Claude transcript and hand it to the classifier.
+ *
+ * Split deliberately: this method does the I/O — how much of the file to read, how to survive a
+ * partial line at the window's edge — and `claudeStatusFromTail` does the deciding. All six
+ * states are then unit-testable without a transcript on disk, and the rules live in one file
+ * next to Bob's, instead of buried in a private method here.
+ */
+async function readStatus(fh, fileSize, updatedAt) {
+    // Nothing has been written yet, so there is nothing to claim about it.
+    if (fileSize === 0) {
+        return 'dormant';
+    }
+    const records = await readTailRecords(fh, fileSize);
     return (0, sessionStatus_1.claudeStatusFromTail)(records, updatedAt.getTime(), Date.now());
 }

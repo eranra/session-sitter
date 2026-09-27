@@ -49,6 +49,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.UNOWNED = void 0;
 exports.canInject = canInject;
+exports.ownedByAWindow = ownedByAWindow;
 exports.injectionBlocker = injectionBlocker;
 exports.heldSessionIds = heldSessionIds;
 exports.pathContains = pathContains;
@@ -70,6 +71,19 @@ exports.UNOWNED = { pid: null, basis: 'none', workspace: '' };
  * channel can be identified inside it is a separate refusal `ClaudeSender` makes for itself.
  */
 function canInject(owner) {
+    return owner.basis === 'holds' || owner.basis === 'workspace';
+}
+/**
+ * Whether some VS Code window — as opposed to the daemon, or nobody — currently owns this session.
+ *
+ * `RemoteControlService` runs only inside a window's extension host; the daemon claims sessions
+ * (tier 3) but runs no mirror loop of its own. So a session whose owner fails this check is one no
+ * running process is currently renaming or posting turns for on its own account — that gap is what
+ * the reader's orphan sweep exists to close. Same shape as `canInject` today, but a different
+ * question: this asks who is *responsible*, that asks who can *write*. They coincide only because
+ * neither tier that fails this can reach an extension host.
+ */
+function ownedByAWindow(owner) {
     return owner.basis === 'holds' || owner.basis === 'workspace';
 }
 /** A sentence saying why this owner cannot be written to. Null when it can. */

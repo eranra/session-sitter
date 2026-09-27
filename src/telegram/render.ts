@@ -26,6 +26,7 @@
 import type { ClaudeSession } from '../SessionManager';
 import type { MessageExchange } from '../SessionManager';
 import { needsYou, type SessionStatus } from '../sessionStatus';
+import { WORKSPACE_COLOR_NAMES, resolveWorkspaceColor, type ColourableSession } from '../workspaceColors';
 import type { Ownership } from './ownership';
 
 /** Telegram's message body limit. */
@@ -118,6 +119,88 @@ export function statusIcon(status: SessionStatus): string {
 }
 
 /**
+ * `sessionSitter.workspaceColors`, carried into Telegram.
+ *
+ * The panel paints a coloured pill per workspace so a dozen sessions across five checkouts are
+ * still tellable apart at a glance (`workspaceColors.ts`). Telegram has no per-character colour —
+ * a topic name and a list row are plain text — so the same assignment becomes one of Unicode's nine
+ * "large square" emoji instead, glued onto the status icon that already leads every row.
+ *
+ * Named colours are looked up exactly rather than by RGB distance: `yellow` and `amber` in
+ * `workspaceColors.ts` are deliberately darkened for legibility, and by raw distance both land
+ * closer to the orange square than the one their name promises. The name the user picked is what
+ * decides the square; distance is only the fallback for a hex they typed by hand.
+ */
+const NAMED_SQUARES: Readonly<Record<string, string>> = {
+  red: '🟥', pink: '🟥',
+  orange: '🟧', amber: '🟧',
+  yellow: '🟨',
+  lime: '🟩', green: '🟩',
+  teal: '🟦', cyan: '🟦', blue: '🟦', indigo: '🟦',
+  violet: '🟪', purple: '🟪', magenta: '🟪',
+  brown: '🟫',
+  slate: '⬛', gray: '⬛', grey: '⬛',
+};
+
+/** Exact hex → square, built from `WORKSPACE_COLOR_NAMES` so `auto` — which draws from the same
+ *  palette — resolves here too, with no distance calculation involved. */
+const HEX_SQUARES: ReadonlyMap<string, string> = new Map(
+  Object.entries(WORKSPACE_COLOR_NAMES).map(([name, hex]) => [hex.toLowerCase(), NAMED_SQUARES[name]]),
+);
+
+/** The fallback anchors for a hex outside the named palette — one representative RGB per square. */
+const SQUARE_ANCHORS: ReadonlyArray<{ emoji: string; rgb: readonly [number, number, number] }> = [
+  { emoji: '🟥', rgb: [224, 49, 49] },
+  { emoji: '🟧', rgb: [247, 103, 7] },
+  { emoji: '🟨', rgb: [255, 212, 59] },
+  { emoji: '🟩', rgb: [64, 192, 87] },
+  { emoji: '🟦', rgb: [28, 126, 214] },
+  { emoji: '🟪', rgb: [156, 54, 181] },
+  { emoji: '🟫', rgb: [121, 85, 72] },
+  { emoji: '⬛', rgb: [31, 31, 31] },
+  { emoji: '⬜', rgb: [255, 255, 255] },
+];
+
+function hexToRgb(hex: string): [number, number, number] | undefined {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) { return undefined; }
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/**
+ * The large-square emoji for a `sessionSitter.workspaceColors` background hex, or '' when `hex`
+ * cannot be parsed. Named colours resolve exactly; anything else falls back to nearest by RGB
+ * distance, so a hand-typed hex still gets a square rather than none at all.
+ */
+export function nearestColorSquare(hex: string): string {
+  const normalized = hex.trim().toLowerCase();
+  const rgb = hexToRgb(normalized);
+  if (!rgb) { return ''; }
+  const named = HEX_SQUARES.get(normalized);
+  if (named) { return named; }
+  let best = SQUARE_ANCHORS[0];
+  let bestDist = Infinity;
+  for (const candidate of SQUARE_ANCHORS) {
+    const dist = (rgb[0] - candidate.rgb[0]) ** 2
+      + (rgb[1] - candidate.rgb[1]) ** 2
+      + (rgb[2] - candidate.rgb[2]) ** 2;
+    if (dist < bestDist) { bestDist = dist; best = candidate; }
+  }
+  return best.emoji;
+}
+
+/**
+ * The colour square for one session's workspace, or '' when `sessionSitter.workspaceColors` does
+ * not claim it — the same "leave it alone" rule the panel's pill follows, so an unconfigured
+ * project shows no square rather than an arbitrary one.
+ */
+export function sessionColorSquare(session: ColourableSession, rules: unknown): string {
+  const color = resolveWorkspaceColor(session, rules);
+  return color ? nearestColorSquare(color.background) : '';
+}
+
+/**
  * How a session is named wherever it is named: `workspace / title · agent[@host]`.
  *
  * The order is not cosmetic. The workspace answers "which piece of work is this?", which is the
@@ -156,20 +239,22 @@ export function relativeAge(updatedAt: Date, now: number): string {
 }
 
 /**
- * The name of a session's topic: `🟠 workspace / title · claude`.
+ * The name of a session's topic: `🟠 workspace / title · claude`, or `🟠🟩 workspace / …` when the
+ * workspace has a `sessionSitter.workspaceColors` rule.
  *
  * The status icon leads so the topic list doubles as a status board — Telegram shows topic names in
- * a sidebar, and an icon there is the cheapest possible "what needs me" signal. Everything after it
- * follows `sessionLabel`: workspace, title, then the agent and the machine.
+ * a sidebar, and an icon there is the cheapest possible "what needs me" signal. The colour square,
+ * when there is one, is glued straight onto it — a second badge, not a second thing to read — and
+ * everything after follows `sessionLabel`: workspace, title, then the agent and the machine.
  *
  * The title is what gets truncated, never the workspace, because two topics from the same workspace
  * still have to be told apart by title.
  */
-export function topicName(session: ClaudeSession): string {
-  const icon = `${statusIcon(session.status)} `;
-  // What the name costs before a single character of title: the icon, the workspace, the separators
-  // and the agent. Measured rather than guessed, so a long workspace or an `agent@host` cannot push
-  // the result past Telegram's limit.
+export function topicName(session: ClaudeSession, rules: unknown = {}): string {
+  const icon = `${statusIcon(session.status)}${sessionColorSquare(session, rules)} `;
+  // What the name costs before a single character of title: the icon, the square, the workspace,
+  // the separators and the agent. Measured rather than guessed, so a long workspace, a colour
+  // square or an `agent@host` cannot push the result past Telegram's limit.
   const overhead = icon.length + sessionLabel({ ...session, title: '' }, 0).length;
   const room = MAX_TOPIC_NAME_CHARS - overhead;
   if (room < 8) {
@@ -189,11 +274,12 @@ function byWorkspaceThenTitle(a: ListEntry, b: ListEntry): number {
   return ws !== 0 ? ws : a.session.title.localeCompare(b.session.title);
 }
 
-/** One list row: `🟠 workspace / title · claude · 2m · read-only`. */
-function listRow(entry: ListEntry, now: number): string {
+/** One list row: `🟠 workspace / title · claude · 2m · read-only`, coloured square glued on. */
+function listRow(entry: ListEntry, now: number, rules: unknown): string {
   const { session, owner } = entry;
   const readOnly = owner.pid === null ? ' · read-only' : '';
-  return `${statusIcon(session.status)} ${sessionLabel(session, 40)}`
+  const icon = `${statusIcon(session.status)}${sessionColorSquare(session, rules)}`;
+  return `${icon} ${sessionLabel(session, 40)}`
     + ` · ${relativeAge(session.updatedAt, now)}${readOnly}`;
 }
 
@@ -214,7 +300,7 @@ function listRow(entry: ListEntry, now: number): string {
  * It now trails inside each row, and only for a session on another machine.
  */
 export function renderFleetList(
-  entries: ListEntry[], hostname: string, now: number,
+  entries: ListEntry[], hostname: string, now: number, rules: unknown = {},
 ): string {
   // Counted by what they ask of you, not by internal state name: "needs you" is the number you act
   // on, and it is the only figure worth reading at the top of a list of twenty.
@@ -229,7 +315,7 @@ export function renderFleetList(
 
   const lines = [header, counts, ''];
   for (const entry of entries.slice().sort(byWorkspaceThenTitle)) {
-    lines.push(`  ${listRow(entry, now)}`);
+    lines.push(`  ${listRow(entry, now, rules)}`);
   }
   return truncate2(lines.join('\n'));
 }
@@ -259,7 +345,7 @@ export function fleetSignature(entries: ListEntry[]): string {
  * working on?" is the actual question a history list is asked.
  */
 export function renderHistoryList(
-  entries: ListEntry[], now: number,
+  entries: ListEntry[], now: number, rules: unknown = {},
 ): string {
   if (entries.length === 0) {
     return 'No earlier sessions — everything this machine can see is already in the active list.';
@@ -270,7 +356,7 @@ export function renderHistoryList(
     '',
   ];
   for (const entry of entries) {
-    lines.push(`  ${listRow(entry, now)}`);
+    lines.push(`  ${listRow(entry, now, rules)}`);
   }
   return truncate2(lines.join('\n'));
 }
@@ -294,10 +380,11 @@ export function truncate2(body: string): string {
  * — so the header confirms what the topic name already said instead of restating it differently.
  */
 export function renderTopicHeader(
-  session: ClaudeSession, owner: Ownership, blockedReason: string | null,
+  session: ClaudeSession, owner: Ownership, blockedReason: string | null, rules: unknown = {},
 ): string {
+  const icon = `${statusIcon(session.status)}${sessionColorSquare(session, rules)}`;
   const lines = [
-    `${statusIcon(session.status)} ${session.projectName}`,
+    `${icon} ${session.projectName}`,
     session.title,
     '',
     `agent: ${SOURCE_LABEL[session.source]}`,
@@ -653,7 +740,7 @@ export function renderHelp(): string {
 }
 
 /** `/who` — the ownership table, so a read-only session can be explained rather than guessed at. */
-export function renderWho(entries: ListEntry[], hostname: string): string {
+export function renderWho(entries: ListEntry[], hostname: string, rules: unknown = {}): string {
   if (entries.length === 0) { return 'No sessions found.'; }
   const lines = [`Ownership on ${hostname}`, ''];
   for (const { session, owner } of entries) {
@@ -662,7 +749,8 @@ export function renderWho(entries: ListEntry[], hostname: string): string {
       : owner.basis === 'daemon'
         ? `pid ${owner.pid} · daemon, mirror only`
         : `pid ${owner.pid} · ${owner.basis === 'holds' ? 'has it open' : 'owns workspace'}`;
-    lines.push(`${statusIcon(session.status)} ${sessionLabel(session, 30)} → ${who}`);
+    const icon = `${statusIcon(session.status)}${sessionColorSquare(session, rules)}`;
+    lines.push(`${icon} ${sessionLabel(session, 30)} → ${who}`);
   }
   return truncate2(lines.join('\n'));
 }

@@ -487,6 +487,10 @@ export function activate(context: vscode.ExtensionContext) {
         }),
       api: defaultApi(remoteControlConfig.botToken),
       log,
+      // Read live, like the panel's own pill colouring, so a colour assigned while Telegram is
+      // already running takes effect on the next pass rather than needing a reload.
+      workspaceColorRules: () => vscode.workspace.getConfiguration('sessionSitter')
+        .get('workspaceColors', {}),
       // Supervision no longer polls for itself, so its updates are forwarded here.
       supervisionSink: update => supervisionUpdates.push(update),
       supervisionMessageIds: async () => {

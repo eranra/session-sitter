@@ -123,6 +123,12 @@ export interface RemoteControlDeps {
    * and typed into the agent instead of resolving the decision.
    */
   supervisionMessageIds?: () => Promise<ReadonlySet<string>>;
+  /**
+   * `sessionSitter.workspaceColors`, read live so a colour the user assigns while Telegram is
+   * already running shows up on the next pass rather than needing a reload. Absent — the default —
+   * means every session renders with no colour square, exactly as it did before this existed.
+   */
+  workspaceColorRules?: () => unknown;
 }
 
 /**
@@ -307,7 +313,7 @@ export class RemoteControlService {
   private async createTopicFor(
     session: ClaudeSession, owner: Ownership | undefined,
   ): Promise<TopicRecord | null> {
-    const name = topicName(session);
+    const name = topicName(session, this.colorRules());
     const created = await this.forum.createTopic(name);
     if (!created.ok) {
       if (created.notAForum === true && !this.warnedNotAForum) {
@@ -359,7 +365,7 @@ export class RemoteControlService {
       return null;
     }
     await this.forum.send(
-      renderTopicHeader(session, resolved, writeBlockedReason(session, resolved)),
+      renderTopicHeader(session, resolved, writeBlockedReason(session, resolved), this.colorRules()),
       record.threadId,
       this.sessionButtons(session),
     );
@@ -383,7 +389,7 @@ export class RemoteControlService {
     let changed = false;
     const now = this.now();
 
-    const wanted = topicName(session);
+    const wanted = topicName(session, this.colorRules());
     if (shouldRenameTopic(record, wanted, session.status, now, statusHoldMs(this.deps.config))) {
       const renamed = await this.forum.renameTopic(record.threadId, wanted);
       if (renamed.ok) {
@@ -610,6 +616,12 @@ export class RemoteControlService {
     this.recentlySent.set(sessionId, list);
   }
 
+  /** `sessionSitter.workspaceColors`, read fresh on every call so a change while running takes
+   *  effect on the next pass rather than needing a reload. `{}` — no colour anywhere — absent it. */
+  private colorRules(): unknown {
+    return this.deps.workspaceColorRules?.() ?? {};
+  }
+
   // ------------------------------------------------------------------ reader only
 
   /**
@@ -772,7 +784,8 @@ export class RemoteControlService {
 
       case 'who':
         await this.forum.send(
-          renderWho(this.entriesOf(fleet.active, fleet.owners), this.hostname), null);
+          renderWho(this.entriesOf(fleet.active, fleet.owners), this.hostname, this.colorRules()),
+          null);
         return;
 
       case 'newSessionMenu':
@@ -816,7 +829,8 @@ export class RemoteControlService {
     // Recorded here rather than by the caller, so an on-demand `/sessions` and an automatic refresh
     // leave the same mark and neither re-edits what the other just drew.
     this.lastListSignature = fleetSignature(this.entriesOf(sessions, owners));
-    const body = renderFleetList(this.entriesOf(this.lastListed, owners), this.hostname, this.now());
+    const body = renderFleetList(
+      this.entriesOf(this.lastListed, owners), this.hostname, this.now(), this.colorRules());
     const markup = this.listButtons();
     if (this.listMessageId !== undefined) {
       const edited = await this.forum.edit(this.listMessageId, body, markup);
@@ -884,7 +898,7 @@ export class RemoteControlService {
     }]));
     rows.push([{ text: '⟳ Active sessions', callback_data: encodeCallback({ kind: 'refresh' }) }]);
     await this.forum.send(
-      renderHistoryList(this.entriesOf(this.lastHistory, owners), this.now()),
+      renderHistoryList(this.entriesOf(this.lastHistory, owners), this.now(), this.colorRules()),
       null,
       { inline_keyboard: rows });
   }

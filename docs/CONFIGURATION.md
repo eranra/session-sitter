@@ -455,6 +455,11 @@ being painted something arbitrary.
 Colours apply to History rows as well, and to sessions on other machines — the same project has the
 same colour wherever it is running.
 
+If [remote control](#telegram-remote-control) is on, the same colour follows a session into
+Telegram too — as a large-square emoji (🟥🟧🟨🟩🟦🟪🟫⬛) glued onto the status icon, since Telegram
+has no per-character text colour. It appears on the topic name, the pinned session list, `/history`,
+`/who`, and a topic's header message. An unlisted workspace shows no square there either.
+
 ---
 
 ## Auto-respond rules

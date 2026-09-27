@@ -6,6 +6,7 @@ import {
   MAX_TOPIC_NAME_CHARS,
   MAX_TURNS_PER_PASS_DEFAULT,
   isEchoOfSent,
+  nearestColorSquare,
   planMirror,
   renderToolSample,
   turnKey,
@@ -17,6 +18,7 @@ import {
   renderTopicHeader,
   renderTurn,
   renderWho,
+  sessionColorSquare,
   sessionLabel,
   splitMessages,
   statusIcon,
@@ -77,6 +79,61 @@ describe('statusIcon', () => {
     for (const status of SESSION_STATUSES) {
       expect(statusIcon(status), status).toBe(expected[status]);
     }
+  });
+});
+
+describe('nearestColorSquare', () => {
+  it('gives every sessionSitter.workspaceColors name the square a reader would call by that name', () => {
+    // Exact lookup, not raw RGB distance — `yellow` (#a68b00) and `amber` (#b7791f) are both
+    // deliberately darkened for legibility in workspaceColors.ts, so by distance alone they land
+    // closer to the orange square than the yellow one. The name is what the user picked, so the
+    // name is what decides the square.
+    expect(nearestColorSquare('#c0392b')).toBe('\u{1F7E5}'); // red
+    expect(nearestColorSquare('#2e7d32')).toBe('\u{1F7E9}'); // green
+    expect(nearestColorSquare('#1f70c1')).toBe('\u{1F7E6}'); // blue
+    expect(nearestColorSquare('#a68b00')).toBe('\u{1F7E8}'); // yellow
+    expect(nearestColorSquare('#8250df')).toBe('\u{1F7EA}'); // purple
+    expect(nearestColorSquare('#795548')).toBe('\u{1F7EB}'); // brown
+  });
+
+  it('falls back to nearest by RGB distance for a hex outside the named palette', () => {
+    // A hand-typed hex the user did not pick from the named list has no name to look up, so it
+    // still gets a square rather than none at all.
+    expect(nearestColorSquare('#ff2222')).toBe('\u{1F7E5}'); // reddish → red
+    expect(nearestColorSquare('#22cc22')).toBe('\u{1F7E9}'); // greenish → green
+  });
+
+  it('is stable for the same input', () => {
+    expect(nearestColorSquare('#1f70c1')).toBe(nearestColorSquare('#1f70c1'));
+  });
+
+  it('returns nothing for a value that is not a hex colour', () => {
+    expect(nearestColorSquare('blue')).toBe('');
+    expect(nearestColorSquare('')).toBe('');
+    expect(nearestColorSquare('#zzzzzz')).toBe('');
+  });
+});
+
+describe('sessionColorSquare', () => {
+  const alpha = { projectName: 'alpha', projectPath: '/work/alpha' };
+
+  it('is empty when no rule claims the workspace, same as an uncoloured panel pill', () => {
+    expect(sessionColorSquare(alpha, {})).toBe('');
+    expect(sessionColorSquare(alpha, { beta: 'blue' })).toBe('');
+  });
+
+  it('squares a named colour from sessionSitter.workspaceColors', () => {
+    expect(sessionColorSquare(alpha, { alpha: 'green' })).toBe('\u{1F7E9}');
+  });
+
+  it('squares a hex value the same way a name would resolve', () => {
+    expect(sessionColorSquare(alpha, { alpha: '#1f70c1' })).toBe(nearestColorSquare('#1f70c1'));
+  });
+
+  it('squares "auto" deterministically, the same colour every time', () => {
+    const square = sessionColorSquare(alpha, { '*': 'auto' });
+    expect(square).not.toBe('');
+    expect(sessionColorSquare(alpha, { '*': 'auto' })).toBe(square);
   });
 });
 
@@ -158,6 +215,20 @@ describe('topicName', () => {
     const name = topicName(session({ projectName: 'w'.repeat(200) }));
     expect(name.length).toBeLessThanOrEqual(MAX_TOPIC_NAME_CHARS);
   });
+
+  it('adds no square when the workspace has no colour rule', () => {
+    expect(topicName(session())).not.toMatch(/[\u{1F7E5}-\u{1F7EB}⬛⬜]/u);
+  });
+
+  it('glues the workspace’s colour square onto the status icon', () => {
+    const name = topicName(session(), { app: 'green' });
+    expect(name).toBe('🟠🟩 app / fix the sort order · claude');
+  });
+
+  it('stays inside the Telegram topic name limit with a colour square and a long title', () => {
+    const long = session({ title: 'x'.repeat(400), projectName: 'y'.repeat(60) });
+    expect(topicName(long, { '*': 'auto' }).length).toBeLessThanOrEqual(MAX_TOPIC_NAME_CHARS);
+  });
 });
 
 describe('renderFleetList', () => {
@@ -222,6 +293,22 @@ describe('renderFleetList', () => {
       owner: owned,
     }));
     expect(renderFleetList(many, 'desktop', NOW).length).toBeLessThanOrEqual(MAX_MESSAGE_CHARS);
+  });
+
+  it('marks a row with its workspace’s colour square, same rule the panel pill uses', () => {
+    const body = renderFleetList(
+      [{ session: session(), owner: owned }], 'desktop', NOW, { app: 'green' });
+    expect(body).toContain('🟠🟩 app / fix the sort order');
+  });
+
+  it('adds no square to a row whose workspace has no colour rule', () => {
+    const body = renderFleetList(
+      [{ session: session(), owner: owned }], 'desktop', NOW, { app: 'green' });
+    const other = renderFleetList(
+      [{ session: session({ sessionId: 'b', projectName: 'other' }), owner: owned }],
+      'desktop', NOW, { app: 'green' });
+    expect(body).toContain('🟩');
+    expect(other).not.toMatch(/[\u{1F7E5}-\u{1F7EB}⬛⬜]/u);
   });
 });
 
@@ -328,6 +415,11 @@ describe('renderTopicHeader', () => {
     expect(renderTopicHeader(session(), owned, null)).toContain('pid 100');
     expect(renderTopicHeader(session(), { pid: 5, basis: 'workspace', workspace: '/w' }, null))
       .toContain('owns the workspace');
+  });
+
+  it('glues the workspace’s colour square onto the header’s status icon', () => {
+    const body = renderTopicHeader(session(), owned, null, { app: 'blue' });
+    expect(body).toContain('🟠🟦 app');
   });
 });
 
@@ -570,6 +662,11 @@ describe('renderHelp and renderWho', () => {
 
   it('who says so when there is nothing to show', () => {
     expect(renderWho([], 'desktop')).toBe('No sessions found.');
+  });
+
+  it('who glues the workspace’s colour square onto the status icon', () => {
+    const body = renderWho([{ session: session(), owner: owned }], 'desktop', { app: 'red' });
+    expect(body).toContain('🟠🟥 app');
   });
 });
 

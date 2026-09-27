@@ -7,7 +7,9 @@
  *    aimed at them. This is the per-window responsibility the feature is built around.
  *  - **Whether it holds the reader lease** (`lease.ts`) — exactly one window per machine reads
  *    `getUpdates`, because a bot token has one destructive update stream. The reader also renders
- *    the General list and reports command results.
+ *    the General list, reports command results, and sweeps up sessions no window owns (claimed by
+ *    the daemon, or by nobody) so a workspace that sits closed for days does not leave its topic
+ *    frozen on the title it had the last time a window was open on it.
  *
  * Writing is not leased. Each window posts its own sessions' messages, so nothing is centralised
  * that does not have to be.
@@ -53,7 +55,7 @@ import { ForumApi, type ReplyMarkup } from './forum';
 import { classifyUpdate, decodeCallback, encodeCallback, type Intent } from './intent';
 import { ReaderLease, LEASE_RENEW_MS } from './lease';
 import {
-  daemonClaimantFrom, resolveOwner, resolveOwners, writeBlockedReason,
+  daemonClaimantFrom, ownedByAWindow, resolveOwner, resolveOwners, writeBlockedReason,
   type DaemonClaimant, type Ownership,
 } from './ownership';
 import { health, heartbeatPath, readHeartbeat } from '../daemonHeartbeat';
@@ -264,7 +266,34 @@ export class RemoteControlService {
     active: ClaudeSession[], owners: Map<string, Ownership>,
   ): Promise<void> {
     const mine = active.filter(s => owners.get(s.sessionId)?.pid === this.pid);
-    for (const session of mine) {
+    await this.mirrorSessions(mine, owners);
+  }
+
+  /**
+   * Sessions no window owns — daemon-claimed, or claimed by nobody — mirrored by the reader alone.
+   *
+   * `mirrorOwnedSessions` runs in every window but only for sessions that window itself owns, so a
+   * session whose owning workspace sits closed freezes its topic at whatever it said the last time
+   * a window had it open: the daemon can claim the session (`ownership.ts` tier 3) but runs no
+   * mirror loop of its own, and nobody else treats it as theirs to revisit. This is that revisit,
+   * done once per pass rather than once per window, because exactly one process holds the reader
+   * lease at a time — the same guarantee `pruneInactiveTopics` already relies on for the same reason.
+   */
+  private async mirrorOrphanedSessions(
+    active: ClaudeSession[], owners: Map<string, Ownership>,
+  ): Promise<void> {
+    const orphaned = active.filter(s => {
+      const owner = owners.get(s.sessionId);
+      return owner === undefined || !ownedByAWindow(owner);
+    });
+    await this.mirrorSessions(orphaned, owners);
+  }
+
+  /** Create a topic for each of `sessions` that lacks one, else refresh it. */
+  private async mirrorSessions(
+    sessions: ClaudeSession[], owners: Map<string, Ownership>,
+  ): Promise<void> {
+    for (const session of sessions) {
       const existing = await this.topics.bySession(session.sessionId);
       if (existing === null) {
         await this.createTopicFor(session, owners.get(session.sessionId));
@@ -586,13 +615,15 @@ export class RemoteControlService {
   /**
    * The reader's extra work.
    *
-   * Pruning lives here rather than in the per-window mirror because the topic list is one shared
-   * thing, and the reader is already the window that owns the shared view — it renders the General
-   * list. Doing it in every window would be harmless (closing is idempotent) but would multiply the
-   * API calls by the number of windows for no gain.
+   * Pruning, and now the orphan sweep, live here rather than in the per-window mirror because both
+   * are one shared responsibility rather than a per-window one, and the reader is already the window
+   * that owns the shared view — it renders the General list. Doing either in every window would be
+   * harmless (closing and re-renaming are both idempotent) but would multiply the API calls by the
+   * number of windows for no gain.
    */
   private async readerPass(fleet: FleetView): Promise<void> {
     await this.pruneInactiveTopics(fleet.active, fleet.history);
+    await this.mirrorOrphanedSessions(fleet.active, fleet.owners);
     await this.refreshListIfChanged(fleet.active, fleet.owners);
     await this.reportResults(fleet);
     await this.reportUnroutable();

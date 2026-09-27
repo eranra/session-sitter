@@ -4,6 +4,7 @@ import {
   daemonClaimantFrom,
   injectionBlocker,
   isWritableSource,
+  ownedByAWindow,
   ownedByThisWindow,
   pathContains,
   resolveOwner,
@@ -274,6 +275,31 @@ describe('injectionBlocker', () => {
     const nobody = injectionBlocker({ pid: null, basis: 'none', workspace: '' }) ?? '';
     expect(nobody).toContain('no window or daemon');
     expect(nobody).not.toContain('extension host');
+  });
+});
+
+describe('ownedByAWindow', () => {
+  const owner = (basis: Ownership['basis'], pid: number | null = 1): Ownership =>
+    ({ pid, basis, workspace: '' });
+
+  /**
+   * The gap this closes: mirroring a Telegram topic used to require a window's own pid to match
+   * the owner, so a session claimed by the daemon — or by nobody, when no daemon runs either — was
+   * never revisited by anyone once the window that opened it closed. It could sit weeks behind the
+   * transcript's real title while the panel, which rescans on every render regardless of ownership,
+   * kept showing the current one. This is the predicate the reader now uses to pick up that slack.
+   */
+  it('is true only for a window, the tiers that can actually run RemoteControlService', () => {
+    expect(ownedByAWindow(owner('holds'))).toBe(true);
+    expect(ownedByAWindow(owner('workspace'))).toBe(true);
+  });
+
+  it('is false for the daemon, which claims the session but runs no mirror loop', () => {
+    expect(ownedByAWindow(owner('daemon', 9001))).toBe(false);
+  });
+
+  it('is false for nobody', () => {
+    expect(ownedByAWindow(owner('none', null))).toBe(false);
   });
 });
 

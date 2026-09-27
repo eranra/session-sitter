@@ -90,6 +90,20 @@ export function canInject(owner: Ownership): boolean {
   return owner.basis === 'holds' || owner.basis === 'workspace';
 }
 
+/**
+ * Whether some VS Code window — as opposed to the daemon, or nobody — currently owns this session.
+ *
+ * `RemoteControlService` runs only inside a window's extension host; the daemon claims sessions
+ * (tier 3) but runs no mirror loop of its own. So a session whose owner fails this check is one no
+ * running process is currently renaming or posting turns for on its own account — that gap is what
+ * the reader's orphan sweep exists to close. Same shape as `canInject` today, but a different
+ * question: this asks who is *responsible*, that asks who can *write*. They coincide only because
+ * neither tier that fails this can reach an extension host.
+ */
+export function ownedByAWindow(owner: Ownership): boolean {
+  return owner.basis === 'holds' || owner.basis === 'workspace';
+}
+
 /** A sentence saying why this owner cannot be written to. Null when it can. */
 export function injectionBlocker(owner: Ownership): string | null {
   if (canInject(owner)) { return null; }

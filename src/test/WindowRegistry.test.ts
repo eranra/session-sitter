@@ -30,9 +30,38 @@ describe('detectIdeCli', () => {
     expect(detectIdeCli('/usr/lib/code/node', 'IBM Bob', readdir)).toBe('bobide');
   });
 
-  it('falls back to "code" for VS Code desktop', () => {
+  it('falls back to "code" for VS Code desktop when no appRoot is given', () => {
     const readdir = vi.fn(() => { throw new Error('ENOENT'); });
     expect(detectIdeCli('/usr/lib/code/node', 'Visual Studio Code', readdir)).toBe('code');
+  });
+
+  it('resolves the bundled CLI under appRoot on macOS desktop, bypassing PATH', () => {
+    const readdir = vi.fn(() => { throw new Error('ENOENT'); });
+    const appRoot = '/Applications/Visual Studio Code.app/Contents/Resources/app';
+    const existsSync = vi.fn().mockReturnValue(true);
+    expect(detectIdeCli('/usr/lib/code/node', 'Visual Studio Code', readdir, appRoot, existsSync, 'darwin'))
+      .toBe(path.join(appRoot, 'bin', 'code'));
+    expect(existsSync).toHaveBeenCalledWith(path.join(appRoot, 'bin', 'code'));
+  });
+
+  it('resolves the sibling bin/code[.cmd] under the install root on Windows/Linux desktop', () => {
+    const readdir = vi.fn(() => { throw new Error('ENOENT'); });
+    const appRoot = 'C:\\Program Files\\Microsoft VS Code\\resources\\app';
+    const existsSync = vi.fn().mockReturnValue(true);
+    expect(detectIdeCli('C:\\...\\Code.exe', 'Visual Studio Code', readdir, appRoot, existsSync, 'win32'))
+      .toBe(path.join(appRoot, '..', '..', 'bin', 'code.cmd'));
+
+    const linuxRoot = '/usr/share/code/resources/app';
+    expect(detectIdeCli('/usr/share/code/code', 'Visual Studio Code', readdir, linuxRoot, existsSync, 'linux'))
+      .toBe(path.join(linuxRoot, '..', '..', 'bin', 'code'));
+  });
+
+  it('falls back to bare "code" when the derived appRoot path does not exist', () => {
+    const readdir = vi.fn(() => { throw new Error('ENOENT'); });
+    const existsSync = vi.fn().mockReturnValue(false);
+    expect(detectIdeCli(
+      '/usr/lib/code/node', 'Visual Studio Code', readdir, '/some/appRoot', existsSync, 'darwin',
+    )).toBe('code');
   });
 });
 
